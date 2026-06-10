@@ -132,6 +132,12 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
 
 ---
 
+## 출처 및 라이선스
+
+`korean-law-mcp-kh`는 [chrisryugj/korean-law-mcp](https://github.com/chrisryugj/korean-law-mcp)를 기반으로 기능을 추가·수정한 포크 버전입니다.
+
+---
+
 ## 릴리스 노트
 
 ### v0.0.1
