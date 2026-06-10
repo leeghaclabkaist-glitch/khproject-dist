@@ -1,0 +1,79 @@
+{
+  "name": "korean-law-mcp_kh",
+  "version": "4.0.3",
+  "description": "(장절 표시 추가 by KH) + 법제처 42개 API → 17개 MCP 도구. 법령·판례·조례·조약 + LLM 환각 방지 인용 검증 + 조문 영향 그래프(impact_map) + 시점 비교(time_travel) + 시민 가이드(action_plan) + 국세청 해석례(nts)",
+  "type": "module",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js"
+    },
+    "./lib/*": {
+      "types": "./build/lib/*.d.ts",
+      "import": "./build/lib/*.js"
+    },
+    "./tools/*": {
+      "types": "./build/tools/*.d.ts",
+      "import": "./build/tools/*.js"
+    },
+    "./server/*": {
+      "types": "./build/server/*.d.ts",
+      "import": "./build/server/*.js"
+    }
+  },
+  "bin": {
+    "korean-law-mcp_kh": "build/index.js",
+    "korean-law_kh": "build/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node build/index.js",
+    "cli": "node build/cli.js",
+    "prepublishOnly": "npm run build",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "korean-law",
+    "법령",
+    "판례",
+    "법제처",
+    "claude",
+    "model-context-protocol",
+    "legal-ai",
+    "cli"
+  ],
+  "author": "Chris",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@xmldom/xmldom": "^0.9.8",
+    "commander": "^14.0.3",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "kordoc": "^2.4.0",
+    "pdfjs-dist": "^5.5.207",
+    "zod": "^3.25.76 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leeghaclabkaist-glitch/korean-law-mcp-kh.git"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
