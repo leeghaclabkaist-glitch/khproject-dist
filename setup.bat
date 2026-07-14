@@ -1,24 +1,23 @@
 @echo off
-chcp 65001 >nul
 echo ===================================================
-echo  KH Project 설치 스크립트
+echo  KH Project ��ġ ��ũ��Ʈ
 echo ===================================================
 echo.
 
-echo [1/2] Python 패키지 설치 중...
+echo [1/2] Python ��Ű�� ��ġ ��...
 pip install mcp
 if %errorlevel% neq 0 (
-    echo [오류] pip 실패. Python이 설치되어 있는지 확인하세요.
+    echo [����] pip ����. Python�� ��ġ�Ǿ� �ִ��� Ȯ���ϼ���.
     pause
     exit /b 1
 )
 
 echo.
-echo [2/2] Node.js 패키지 설치 중...
+echo [2/2] Node.js ��Ű�� ��ġ ��...
 cd korean-law-mcp-kh
 npm install --production
 if %errorlevel% neq 0 (
-    echo [오류] npm 실패. Node.js가 설치되어 있는지 확인하세요.
+    echo [����] npm ����. Node.js�� ��ġ�Ǿ� �ִ��� Ȯ���ϼ���.
     pause
     exit /b 1
 )
@@ -26,6 +25,6 @@ cd ..
 
 echo.
 echo ===================================================
-echo  설치 완료!
+echo  ��ġ �Ϸ�!
 echo ===================================================
 pause
