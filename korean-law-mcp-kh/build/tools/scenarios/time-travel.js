@@ -1,4 +1,5 @@
 import { fetchHistoricalVersionsFull } from "../../lib/historical-utils.js";
+import { toArray } from "../../lib/xml-parser.js";
 function normalizeText(s) {
     return (s || "")
         .replace(/<[^>]+>/g, " ")
@@ -11,7 +12,7 @@ function normalizeText(s) {
 }
 function extractArticleSnapshots(lawJson) {
     const raw = lawJson?.법령?.조문?.조문단위;
-    const units = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const units = toArray(raw);
     const snapshots = [];
     for (const u of units) {
         if (u?.조문여부 !== "조문")
@@ -21,10 +22,10 @@ function extractArticleSnapshots(lawJson) {
         const title = String(u.조문제목 || "");
         let body = normalizeText(String(u.조문내용 || ""));
         // 항/호/목 본문 합산 (정규화)
-        const hangs = Array.isArray(u.항) ? u.항 : u.항 ? [u.항] : [];
+        const hangs = toArray(u.항);
         for (const h of hangs) {
             body += " " + normalizeText(String(h.항내용 || ""));
-            const hos = Array.isArray(h.호) ? h.호 : h.호 ? [h.호] : [];
+            const hos = toArray(h.호);
             for (const ho of hos) {
                 body += " " + normalizeText(String(ho.호내용 || ""));
             }

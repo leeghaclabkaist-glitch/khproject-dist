@@ -4,14 +4,13 @@
  * 자연어 한 줄로 모든 법령을 조회하는 프로덕션급 CLI
  *
  * Usage:
- *   korean-law_kh "민법 제1조"                    # 자연어 → 자동 라우팅
- *   korean-law_kh "음주운전 처벌 기준"             # 종합 리서치 자동 실행
- *   korean-law_kh "관세법 개정 이력"               # 개정추적 체인 자동 실행
- *   korean-law_kh search_law --query "민법"       # 직접 도구 호출 (기존 방식)
- *   korean-law_kh list                            # 도구 목록
- *   korean-law_kh interactive                     # 대화형 모드
+ *   korean-law "민법 제1조"                    # 자연어 → 자동 라우팅
+ *   korean-law "음주운전 처벌 기준"             # 종합 리서치 자동 실행
+ *   korean-law "관세법 개정 이력"               # 개정추적 체인 자동 실행
+ *   korean-law search_law --query "민법"       # 직접 도구 호출 (기존 방식)
+ *   korean-law list                            # 도구 목록
+ *   korean-law interactive                     # 대화형 모드
  */
-import dotenv from "dotenv";
 import { Command } from "commander";
 import { z } from "zod";
 import * as readline from "readline";
@@ -21,8 +20,6 @@ import { explainRoute } from "./lib/query-router.js";
 import { VERSION } from "./version.js";
 import { fmt, printBanner, formatOutput, printInteractiveHelp, printToolList, getCategory, extractOptionsFromSchema, coerceValue, } from "./lib/cli-format.js";
 import { getApiClient, executeTool, executeNaturalQuery, executeNaturalQueryJson, } from "./lib/cli-executor.js";
-// .env 파일 로드
-dotenv.config();
 // ────────────────────────────────────────
 // Interactive REPL Mode
 // ────────────────────────────────────────
@@ -159,14 +156,14 @@ async function handleDirectCall(apiClient, input) {
 // ────────────────────────────────────────
 function createProgram() {
     const program = new Command()
-        .name("korean-law_kh")
+        .name("korean-law")
         .description("한국 법령 검색 CLI - 자연어 한 줄로 모든 법령 조회")
         .version(VERSION);
     // ── 자연어 쿼리 (기본 명령) ──
     program
         .command("query <question...>")
         .alias("q")
-        .description("자연어로 법령 조회 (예: korean-law_kh query 민법 제1조)")
+        .description("자연어로 법령 조회 (예: korean-law query 민법 제1조)")
         .option("-v, --verbose", "라우팅 상세 정보 출력")
         .option("--json", "JSON 형식으로 출력")
         .action(async (words, opts) => {
@@ -217,9 +214,9 @@ function createProgram() {
         }
         printBanner();
         printToolList();
-        console.log(fmt.dim("  사용법: korean-law_kh <도구명> [옵션]"));
-        console.log(fmt.dim("  자연어: korean-law_kh query \"민법 제1조\""));
-        console.log(fmt.dim("  대화형: korean-law_kh interactive"));
+        console.log(fmt.dim("  사용법: korean-law <도구명> [옵션]"));
+        console.log(fmt.dim("  자연어: korean-law query \"민법 제1조\""));
+        console.log(fmt.dim("  대화형: korean-law interactive"));
         console.log();
     });
     // ── help <tool> 명령 ──
@@ -230,7 +227,7 @@ function createProgram() {
         const tool = allTools.find(t => t.name === toolName);
         if (!tool) {
             console.error(fmt.red(`알 수 없는 도구: ${toolName}`));
-            console.error(fmt.dim(`'korean-law_kh list'로 사용 가능한 도구를 확인하세요.`));
+            console.error(fmt.dim(`'korean-law list'로 사용 가능한 도구를 확인하세요.`));
             process.exit(1);
         }
         const options = extractOptionsFromSchema(tool.schema);
@@ -252,7 +249,7 @@ function createProgram() {
             .filter(o => o.required && o.name !== "apiKey")
             .map(o => `--${o.name} "<값>"`)
             .join(" ");
-        console.log(fmt.dim(`예시: korean-law_kh ${tool.name} ${example}`));
+        console.log(fmt.dim(`예시: korean-law ${tool.name} ${example}`));
         console.log();
     });
     // ── 도구를 동적으로 서브커맨드 등록 ──
@@ -321,7 +318,7 @@ function createProgram() {
                     for (const issue of error.issues) {
                         console.error(`  ${issue.path.join(".")}: ${issue.message}`);
                     }
-                    console.error(fmt.dim(`\n'korean-law_kh help ${tool.name}'으로 파라미터를 확인하세요.`));
+                    console.error(fmt.dim(`\n'korean-law help ${tool.name}'으로 파라미터를 확인하세요.`));
                 }
                 else {
                     console.error(fmt.red(error instanceof Error ? error.message : String(error)));

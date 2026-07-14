@@ -5,15 +5,14 @@
 import { z } from "zod";
 import { truncateSections } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
-import { findLaws, stripNonLawKeywords as _unused1, } from "../lib/law-search.js";
-// chains.ts 내부 헬퍼가 참조하던 NON_LAW_NAME_RE만 유지 (stripNonLawKeywords는 findLaws 내부에서 사용)
-void _unused1;
+import { findLaws, NON_LAW_NAME_RE, scoreLawRelevance, } from "../lib/law-search.js";
+import { routeQuery } from "../lib/query-router.js";
 import { runScenario, detectScenario, formatSections, formatSuggestedActions } from "./scenarios/index.js";
 // Tool handler imports
 import { analyzeDocument } from "./document-analysis.js";
 import { getThreeTier } from "./three-tier.js";
 import { getBatchArticles } from "./batch-articles.js";
-import { searchPrecedents } from "./precedents.js";
+import { renderPrecedentSearchResult, searchPrecedents } from "./precedents.js";
 import { searchInterpretations } from "./interpretations.js";
 import { searchAdminAppeals } from "./admin-appeals.js";
 import { compareOldNew } from "./comparison.js";
@@ -21,19 +20,66 @@ import { getArticleHistory } from "./article-history.js";
 import { searchOrdinance } from "./ordinance-search.js";
 import { getOrdinance } from "./ordinance.js";
 import { getAnnexes } from "./annex.js";
-import { searchAiLaw } from "./life-law.js";
+import { searchAiLaw, searchAiLawStructured } from "./life-law.js";
 import { getLawText } from "./law-text.js";
 import { searchTaxTribunalDecisions } from "./tax-tribunal-decisions.js";
 import { searchNlrcDecisions, searchPipcDecisions } from "./committee-decisions.js";
+import { fetchSearchDetailChain } from "./search-detail-chain.js";
+import { searchPrecedentsStructured, } from "./precedent-search-core.js";
+import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js";
 // ========================================
 // Helpers
 // ========================================
+const PRECEDENT_FALLBACK_LIMIT = 5;
+function emptyStructuredPrecedentResult(args) {
+    return {
+        originalArgs: args,
+        totalCount: 0,
+        page: args.page || 1,
+        hits: [],
+        attempts: [],
+        fallbackUsed: false,
+    };
+}
+function errorCallResult(error, toolName) {
+    const response = formatToolError(error, toolName);
+    return {
+        text: response.content?.[0]?.text || (error instanceof Error ? error.message : String(error)),
+        isError: true,
+    };
+}
+async function safeSearchPrecedentsStructured(apiClient, args, context = {}) {
+    try {
+        return {
+            result: await searchPrecedentsStructured(apiClient, args, context),
+        };
+    }
+    catch (error) {
+        return {
+            result: emptyStructuredPrecedentResult(args),
+            error: errorCallResult(error, "search_precedents"),
+        };
+    }
+}
 async function callTool(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 handler, apiClient, input) {
     try {
         const result = await handler(apiClient, input);
         return { text: result.content?.[0]?.text || "", isError: !!result.isError };
+    }
+    catch (e) {
+        return { text: `오류: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    }
+}
+async function callAiLaw(apiClient, input) {
+    try {
+        const result = await searchAiLawStructured(apiClient, input);
+        return {
+            text: result.response.content?.[0]?.text || "",
+            isError: !!result.response.isError,
+            aiLawArticles: result.articleSignals,
+        };
     }
     catch (e) {
         return { text: `오류: ${e instanceof Error ? e.message : String(e)}`, isError: true };
@@ -108,6 +154,76 @@ function noResult(query) {
     return {
         content: [{ type: "text", text: lines.join("\n") }],
         isError: true,
+    };
+}
+function filterReliableLawResults(laws, query) {
+    const queryWords = query.replace(NON_LAW_NAME_RE, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(word => word.length > 0);
+    return laws.filter(law => scoreLawRelevance(law.lawName, query, queryWords) > 5);
+}
+function selectLawTextSource(laws, query) {
+    const reliableLaws = filterReliableLawResults(laws, query);
+    if (reliableLaws.length > 0) {
+        return { reliableLaws, textLaw: reliableLaws[0], lowConfidence: false };
+    }
+    return { reliableLaws, textLaw: laws[0], lowConfidence: laws.length > 0 };
+}
+async function searchPrecedentsForChain(apiClient, input, context = {}, detailLimit = 2) {
+    const args = {
+        query: input.query,
+        display: input.display,
+        page: 1,
+        apiKey: input.apiKey,
+    };
+    const { result: search, error } = await safeSearchPrecedentsStructured(apiClient, args, {
+        ...context,
+        maxFallbackAttempts: context.maxFallbackAttempts ?? PRECEDENT_FALLBACK_LIMIT,
+        validateResult: validation => validatePrecedentSearchResult(apiClient, validation, { apiKey: input.apiKey }),
+    });
+    if (error) {
+        return {
+            structuredResult: search,
+            searchResult: error,
+            detailResult: null,
+        };
+    }
+    const searchResult = {
+        text: renderPrecedentSearchResult(search),
+        isError: search.hits.length === 0,
+    };
+    const evidence = await fetchPrecedentEvidence(apiClient, search, {
+        apiKey: input.apiKey,
+        detailLimit,
+        full: false,
+    });
+    return {
+        structuredResult: search,
+        searchResult,
+        detailResult: evidence ? { text: evidence.text, isError: evidence.isError } : null,
+    };
+}
+function combineStructuredPrecedentResults(results) {
+    const nonEmpty = results.filter(result => result.hits.length > 0);
+    if (nonEmpty.length === 0)
+        return null;
+    const seen = new Set();
+    const hits = nonEmpty.flatMap(result => result.hits)
+        .filter(hit => {
+        if (seen.has(hit.id))
+            return false;
+        seen.add(hit.id);
+        return true;
+    });
+    return {
+        originalArgs: nonEmpty[0].originalArgs,
+        totalCount: hits.length,
+        page: 1,
+        hits,
+        attempts: results.flatMap(result => result.attempts),
+        fallbackUsed: results.some(result => result.fallbackUsed),
+        successfulAttempt: nonEmpty[0].successfulAttempt,
     };
 }
 function wrapResult(text) {
@@ -202,6 +318,17 @@ export async function chainActionBasis(apiClient, input) {
         parts.push(secOrSkip("법령 해석례", interpR));
         parts.push(secOrSkip("관련 판례", precR));
         parts.push(secOrSkip("행정심판례", appealR));
+        const [interpDetail, precDetail, appealDetail] = await Promise.all([
+            fetchSearchDetailChain(apiClient, "search_interpretations", interpR, { apiKey: input.apiKey }),
+            fetchSearchDetailChain(apiClient, "search_precedents", precR, { apiKey: input.apiKey }),
+            fetchSearchDetailChain(apiClient, "search_admin_appeals", appealR, { apiKey: input.apiKey }),
+        ]);
+        if (interpDetail)
+            parts.push(secOrSkip("법령 해석례 상세", interpDetail));
+        if (precDetail)
+            parts.push(secOrSkip("관련 판례 상세", precDetail));
+        if (appealDetail)
+            parts.push(secOrSkip("행정심판례 상세", appealDetail));
         // 키워드 확장
         const exp = detectExpansions(input.query);
         if (exp.includes("annex_fee") || exp.includes("annex_table")) {
@@ -234,9 +361,9 @@ export const chainDisputePrepSchema = z.object({
 export async function chainDisputePrep(apiClient, input) {
     try {
         const parts = [`═══ 쟁송 대비: ${input.query} ═══`];
-        // Step 1: 판례 + 행정심판 (병렬)
+        // Step 1: 판례 + 행정심판 (병렬). 판례는 구조화 hit 기반 상세조회까지 같은 경로에서 처리한다.
+        const precedentPromise = searchPrecedentsForChain(apiClient, { query: input.query, display: 8, apiKey: input.apiKey }, { route: routeQuery(input.query) });
         const parallel = [
-            callTool(searchPrecedents, apiClient, { query: input.query, display: 8, apiKey: input.apiKey }),
             callTool(searchAdminAppeals, apiClient, { query: input.query, display: 8, apiKey: input.apiKey }),
         ];
         // Step 2: 도메인별 전문 결정례 추가
@@ -250,22 +377,46 @@ export async function chainDisputePrep(apiClient, input) {
         else if (domain === "privacy") {
             parallel.push(callTool(searchPipcDecisions, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }));
         }
-        const results = await Promise.all(parallel);
-        parts.push(secOrSkip("대법원 판례", results[0]));
-        parts.push(secOrSkip("행정심판례", results[1]));
-        if (results[2]) {
+        const [precedentBundle, results] = await Promise.all([
+            precedentPromise,
+            Promise.all(parallel),
+        ]);
+        parts.push(secOrSkip("대법원 판례", precedentBundle.searchResult));
+        parts.push(secOrSkip("행정심판례", results[0]));
+        const [appealDetail] = await Promise.all([
+            fetchSearchDetailChain(apiClient, "search_admin_appeals", results[0], { apiKey: input.apiKey }),
+        ]);
+        if (precedentBundle.detailResult)
+            parts.push(secOrSkip("대법원 판례 상세", precedentBundle.detailResult));
+        if (appealDetail)
+            parts.push(secOrSkip("행정심판례 상세", appealDetail));
+        if (results[1]) {
             const domainNames = {
                 tax: "조세심판원 결정",
                 labor: "중앙노동위 결정",
                 privacy: "개인정보위 결정",
             };
-            parts.push(secOrSkip(domainNames[domain] || "전문 결정례", results[2]));
+            parts.push(secOrSkip(domainNames[domain] || "전문 결정례", results[1]));
+            const domainSearchTools = {
+                tax: "search_tax_tribunal_decisions",
+                labor: "search_nlrc_decisions",
+                privacy: "search_pipc_decisions",
+            };
+            const domainSearchTool = domainSearchTools[domain];
+            if (domainSearchTool) {
+                const domainDetail = await fetchSearchDetailChain(apiClient, domainSearchTool, results[1], { apiKey: input.apiKey });
+                if (domainDetail)
+                    parts.push(secOrSkip(`${domainNames[domain] || "전문 결정례"} 상세`, domainDetail));
+            }
         }
         // 해석례 (키워드 확장)
         const exp = detectExpansions(input.query);
         if (exp.includes("interpretation")) {
             const interp = await callTool(searchInterpretations, apiClient, { query: input.query, display: 5, apiKey: input.apiKey });
             parts.push(secOrSkip("법령 해석례", interp));
+            const interpDetail = await fetchSearchDetailChain(apiClient, "search_interpretations", interp, { apiKey: input.apiKey });
+            if (interpDetail)
+                parts.push(secOrSkip("법령 해석례 상세", interpDetail));
         }
         return wrapResult(parts.join("\n"));
     }
@@ -395,13 +546,13 @@ export async function chainOrdinanceCompare(apiClient, input) {
 export const chainFullResearchSchema = z.object({
     query: z.string().describe("자연어 질문 (예: '기간제 근로자 2년 초과 사용', '음주운전 처벌 기준', '전세금 못 받았어')"),
     scenario: z.enum(["customs", "action_plan"]).optional()
-        .describe("확장 시나리오. customs=관세·통관 종합 | action_plan=시민 친화 5단계 실행 가이드(v4.0, 진단→권리→기관/기한→서류→함정). 미지정 시 쿼리에서 자동 감지."),
+        .describe("확장 시나리오. customs=관세·통관 종합 | action_plan=이럴 땐 이렇게, 5단계 안내(v4.0, 진단→권리→기관/기한→서류→함정). 미지정 시 쿼리에서 자동 감지."),
     apiKey: z.string().optional(),
 });
 export async function chainFullResearch(apiClient, input) {
     try {
         const parts = [`═══ 종합 리서치: ${input.query} ═══`];
-        // Step 1: AI 검색 + 법령 검색 + 판례/해석 모두 병렬
+        // Step 1: AI 검색 + 법령 검색 + 해석례를 병렬 실행하고, 판례는 AI 구조화 신호를 받은 뒤 공통 core로 검색한다.
         // findLaws를 안전하게 래핑 (throw 시 Promise.all 전체 reject 방지)
         const safeFindLaws = async () => {
             try {
@@ -411,21 +562,33 @@ export async function chainFullResearch(apiClient, input) {
                 return [];
             }
         };
-        const [aiResult, lawsResult, precResult, interpResult] = await Promise.all([
-            callTool(searchAiLaw, apiClient, { query: input.query, display: 10, apiKey: input.apiKey }),
+        const [aiResult, rawLawsResult, interpResult] = await Promise.all([
+            callAiLaw(apiClient, { query: input.query, search: "0", display: 10, page: 1, apiKey: input.apiKey }),
             safeFindLaws(),
-            callTool(searchPrecedents, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }),
             callTool(searchInterpretations, apiClient, { query: input.query, display: 5, apiKey: input.apiKey }),
         ]);
+        const { reliableLaws: lawsResult, textLaw, lowConfidence } = selectLawTextSource(rawLawsResult, input.query);
+        const precedentBundle = await searchPrecedentsForChain(apiClient, { query: input.query, display: 5, apiKey: input.apiKey }, {
+            aiLawArticles: aiResult.aiLawArticles,
+            route: routeQuery(input.query),
+            maxFallbackAttempts: PRECEDENT_FALLBACK_LIMIT,
+        });
         parts.push(secOrSkip("AI 법령검색 결과", aiResult));
         // 법령 본문 (첫 번째 결과)
-        if (lawsResult.length > 0) {
-            const p = lawsResult[0];
-            const lawText = await callTool(getLawText, apiClient, { mst: p.mst, apiKey: input.apiKey });
-            parts.push(secOrSkip(`${p.lawName} 본문`, lawText));
+        if (textLaw) {
+            const lawText = await callTool(getLawText, apiClient, { mst: textLaw.mst, apiKey: input.apiKey });
+            const confidenceSuffix = lowConfidence ? " (관련도 낮음)" : "";
+            parts.push(secOrSkip(`${textLaw.lawName} 본문${confidenceSuffix}`, lawText));
         }
-        parts.push(secOrSkip("관련 판례", precResult));
+        parts.push(secOrSkip("관련 판례", precedentBundle.searchResult));
         parts.push(secOrSkip("법령 해석례", interpResult));
+        const [interpDetail] = await Promise.all([
+            fetchSearchDetailChain(apiClient, "search_interpretations", interpResult, { apiKey: input.apiKey }),
+        ]);
+        if (precedentBundle.detailResult)
+            parts.push(secOrSkip("관련 판례 상세", precedentBundle.detailResult));
+        if (interpDetail)
+            parts.push(secOrSkip("법령 해석례 상세", interpDetail));
         // 키워드 확장
         const exp = detectExpansions(input.query);
         if (lawsResult.length > 0) {
@@ -536,31 +699,58 @@ export async function chainDocumentReview(apiClient, input) {
         }
         // 중복 제거 후 최대 5개 힌트로 제한
         const uniqueHints = [...new Set(searchHints)].slice(0, 5);
-        const searchPromises = [];
-        for (const hint of uniqueHints) {
-            searchPromises.push(callTool(searchPrecedents, apiClient, { query: hint, display: 3, apiKey: input.apiKey }));
-        }
-        // AI 법령 검색도 상위 3개 힌트로 병렬 실행
+        const precedentSearches = await Promise.all(uniqueHints.map(hint => safeSearchPrecedentsStructured(apiClient, {
+            query: hint,
+            display: 3,
+            page: 1,
+            apiKey: input.apiKey,
+        }, {
+            documentHints: [hint],
+            maxFallbackAttempts: 3,
+            validateResult: validation => validatePrecedentSearchResult(apiClient, validation, { apiKey: input.apiKey }),
+        })));
+        const precedentResults = precedentSearches.map(search => search.result);
+        // AI 법령 검색은 상위 3개 힌트로 병렬 실행
         const lawHints = uniqueHints.slice(0, 3);
-        for (const hint of lawHints) {
-            searchPromises.push(callTool(searchAiLaw, apiClient, { query: hint, display: 3, apiKey: input.apiKey }));
-        }
-        const searchResults = await Promise.all(searchPromises);
+        const lawResults = await Promise.all(lawHints.map(hint => callTool(searchAiLaw, apiClient, { query: hint, display: 3, apiKey: input.apiKey })));
         // 판례 결과 합산
         const precTexts = [];
         for (let i = 0; i < uniqueHints.length; i++) {
-            const r = searchResults[i];
-            if (!r.isError && r.text.trim()) {
-                precTexts.push(`[${uniqueHints[i]}]\n${r.text}`);
+            const r = precedentResults[i];
+            if (r.hits.length > 0) {
+                precTexts.push(`[${uniqueHints[i]}]\n${renderPrecedentSearchResult(r)}`);
             }
         }
         if (precTexts.length > 0) {
             parts.push(sec("관련 판례", precTexts.join("\n\n")));
         }
+        const precedentErrors = precedentSearches
+            .map((search, index) => search.error ? `[${uniqueHints[index]}]\n${search.error.text}` : "")
+            .filter(text => text.trim());
+        if (precedentErrors.length > 0) {
+            parts.push(secOrSkip("판례 검색 실패", {
+                text: precedentErrors.join("\n\n"),
+                isError: true,
+            }));
+        }
+        const combinedPrecedents = combineStructuredPrecedentResults(precedentResults);
+        if (combinedPrecedents) {
+            const precedentEvidence = await fetchPrecedentEvidence(apiClient, combinedPrecedents, {
+                apiKey: input.apiKey,
+                detailLimit: 2,
+                full: false,
+            });
+            if (precedentEvidence) {
+                parts.push(secOrSkip("관련 판례 상세", {
+                    text: precedentEvidence.text,
+                    isError: precedentEvidence.isError,
+                }));
+            }
+        }
         // 법령 결과 합산
         const lawTexts = [];
         for (let i = 0; i < lawHints.length; i++) {
-            const r = searchResults[uniqueHints.length + i];
+            const r = lawResults[i];
             if (!r.isError && r.text.trim()) {
                 lawTexts.push(`[${lawHints[i]}]\n${r.text}`);
             }

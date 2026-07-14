@@ -3,7 +3,8 @@
  */
 import { z } from "zod";
 import { getLawText } from "./law-text.js";
-import { searchPrecedents } from "./precedents.js";
+import { renderPrecedentSearchResult } from "./precedents.js";
+import { searchPrecedentsStructured } from "./precedent-search-core.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
 export const GetArticleWithPrecedentsSchema = z.object({
@@ -39,14 +40,16 @@ export async function getArticleWithPrecedents(apiClient, input) {
         // 3. 관련 판례 검색
         const precedentQuery = `${lawName} ${input.jo}`;
         try {
-            const precedentResult = await searchPrecedents(apiClient, {
+            const precedentResult = await searchPrecedentsStructured(apiClient, {
                 query: precedentQuery,
                 display: 5,
                 page: 1,
                 apiKey: input.apiKey
+            }, {
+                fallbackPolicy: "none",
             });
-            if (!precedentResult.isError) {
-                const precedentText = precedentResult.content[0].text;
+            if (precedentResult.hits.length > 0) {
+                const precedentText = renderPrecedentSearchResult(precedentResult);
                 // 판례 결과가 있으면 추가
                 if (precedentText && !precedentText.includes("검색 결과가 없습니다")) {
                     resultText += `\n${"=".repeat(60)}\n`;

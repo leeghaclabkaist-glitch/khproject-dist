@@ -71,7 +71,7 @@ export function formatArticleUnit(unit) {
     const joBranch = unit.조문가지번호 || "";
     const joTitle = unit.조문제목 || "";
     if (!isJomun) {
-        // 편, 장, 절, 관 등
+        // 편, 장, 절, 관 등 (KH: 장절 표시 추가)
         let header = "";
         if (unit.조문내용) {
             header = flattenContent(unit.조문내용).trim();
@@ -81,7 +81,6 @@ export function formatArticleUnit(unit) {
         }
         return header ? { header, body: "" } : null;
     }
-    // 조문 처리
     // 헤더
     let header = "";
     if (joNum) {

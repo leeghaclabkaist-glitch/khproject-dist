@@ -6,9 +6,10 @@ import { fetchWithRetry } from "../lib/fetch-with-retry.js";
 import { parseAnnexFile } from "../lib/annex-file-parser.js";
 import { truncateResponse, MAX_RESPONSE_SIZE } from "../lib/schemas.js";
 import { formatToolError, notFoundResponse } from "../lib/errors.js";
-const LAW_BASE_URL = "https://www.law.go.kr";
+import { getLawSiteBaseUrl } from "../lib/law-url-config.js";
+const LAW_BASE_URL = getLawSiteBaseUrl();
 export const GetAnnexesSchema = z.object({
-    lawName: z.string().describe("법령명 (예: '관세법'). 별표를 바로 지정하려면 '... 별표4'처럼 함께 입력 가능"),
+    lawName: z.string().describe("법령명 (예: '관세법'). 별표를 바로 지정하려면 '... 별표4' 또는 '... 별표1의2'처럼 함께 입력 가능"),
     knd: z.enum(["1", "2", "3", "4", "5"]).optional().describe("1=별표, 2=서식, 3=부칙별표, 4=부칙서식, 5=전체"),
     bylSeq: z.string().optional().describe("별표번호 (예: '000300'). 지정 시 해당 별표 파일을 다운로드하여 텍스트로 추출"),
     annexNo: z.string().optional().describe("별표 번호 (예: '4', '별표4', '제4호'). bylSeq 대체 입력"),
@@ -28,8 +29,9 @@ export async function getAnnexes(apiClient, input) {
                 const json = JSON.parse(jsonText);
                 const adminResult = json?.admRulBylSearch;
                 const licResult = json?.licBylSearch;
-                if (adminResult?.admbyl)
-                    return { list: toArray(adminResult.admbyl), type: "admin" };
+                // 법제처 행정규칙 별표 응답의 배열 키는 admrulbyl (admbyl 아님). 구버전 호환 위해 admbyl도 폴백.
+                if (adminResult?.admrulbyl ?? adminResult?.admbyl)
+                    return { list: toArray(adminResult.admrulbyl ?? adminResult.admbyl), type: "admin" };
                 if (licResult?.ordinbyl)
                     return { list: toArray(licResult.ordinbyl), type: "ordinance" };
                 if (licResult?.licbyl)
@@ -71,8 +73,11 @@ export async function getAnnexes(apiClient, input) {
                 lawType = result3.type;
             }
         }
-        // 4차: "규정" 타입은 licbyl과 admbyl 양쪽에 존재 가능 → admin fallback
-        if (annexList.length === 0 && /규정/.test(normalizedLawName)) {
+        // 4차: 행정규칙(고시/훈령/예규) 별표 admin fallback.
+        // "사료 등의 기준 및 규격"처럼 제목에 '고시·훈령' 등 종류 키워드가 없는 행정규칙은
+        // detectLawType이 'law'로 분류해 licbyl만 조회하고 admbyl 경로를 놓친다(#58).
+        // 앞 단계가 모두 비면 종류 무관하게 admbyl로 재조회한다.
+        if (annexList.length === 0) {
             try {
                 const adminText = await apiClient.fetchApi({
                     endpoint: "lawSearch.do",
@@ -108,7 +113,7 @@ export async function getAnnexes(apiClient, input) {
         const filtered = filterByRelatedLawName(annexList, normalizedLawName);
         // 별표 선택값 지정 시 → 해당 별표 파일 다운로드 + 텍스트 추출
         if (annexSelector) {
-            return await extractAnnexContent(filtered, annexSelector, normalizedLawName);
+            return await extractAnnexContent(filtered, annexSelector, normalizedLawName, input.knd);
         }
         // 별표 선택값 미지정 → 기존 목록 반환
         return formatAnnexList(filtered, lawType, input, normalizedLawName);
@@ -118,9 +123,9 @@ export async function getAnnexes(apiClient, input) {
     }
 }
 // ─── 별표 텍스트 추출 ─────────────────────────────────
-async function extractAnnexContent(annexList, annexSelector, normalizedLawName) {
-    // bylSeq / annexNo / lawName 내 힌트로 유연 매칭
-    const matched = findMatchingAnnex(annexList, annexSelector);
+async function extractAnnexContent(annexList, annexSelector, normalizedLawName, knd) {
+    // bylSeq / annexNo / lawName 내 힌트로 유연 매칭 (별표/서식 구분 위해 knd 전달)
+    const matched = findMatchingAnnex(annexList, annexSelector, knd);
     if (!matched) {
         const availableBylSeq = annexList.map((a) => a.별표번호).filter(Boolean).slice(0, 20).join(", ");
         return notFoundResponse(`별표 선택값 "${annexSelector}"에 해당하는 항목을 찾을 수 없습니다. (법령: ${normalizedLawName})`, [
@@ -218,8 +223,9 @@ function formatAnnexList(annexList, lawType, input, normalizedLawName) {
         else if (lawType === "admin") {
             if (annex.관련행정규칙명)
                 resultText += `   행정규칙: ${annex.관련행정규칙명}\n`;
-            if (annex.소관부처)
-                resultText += `   소관부처: ${annex.소관부처}\n`;
+            const dept = annex.소관부처명 || annex.소관부처;
+            if (dept)
+                resultText += `   소관부처: ${dept}\n`;
         }
         else {
             if (annex.관련법령명)
@@ -244,24 +250,45 @@ function extractParentLawName(lawName) {
 }
 function parseLawNameAndHint(lawName) {
     const trimmedLawName = lawName.trim();
-    const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*\]?/);
+    // "별표1", "별표 제1호", "별표 1의2"(= 별표 제1호의2) 모두 매칭. 의-번호는 별도 캡처해 법령명에 남지 않게 한다.
+    const annexHintMatch = trimmedLawName.match(/\[?\s*(별표|서식)\s*(?:제)?\s*(\d{1,6})\s*(?:호)?\s*(?:의\s*(\d{1,2}))?\s*\]?/);
     if (!annexHintMatch) {
         return { normalizedLawName: trimmedLawName };
     }
-    const parsedAnnexNo = Number.parseInt(annexHintMatch[2], 10);
+    const mainNo = Number.parseInt(annexHintMatch[2], 10);
+    const subNo = annexHintMatch[3] ? Number.parseInt(annexHintMatch[3], 10) : null;
     const normalizedLawName = trimmedLawName
         .replace(annexHintMatch[0], " ")
         .replace(/\s+/g, " ")
         .trim();
+    if (Number.isNaN(mainNo)) {
+        return { normalizedLawName: normalizedLawName || trimmedLawName };
+    }
+    // 의-번호가 있으면 법제처 별표번호 6자리 코드(AAAABB)로 변환 (별표 1의2 → "000102").
+    // 없으면 기존 동작 유지(정수 문자열 → buildSelectorCandidates가 6자리 코드 후보 생성).
+    const annexNo = subNo != null
+        ? String(mainNo).padStart(4, "0") + String(subNo).padStart(2, "0")
+        : String(mainNo);
     return {
         normalizedLawName: normalizedLawName || trimmedLawName,
-        annexNo: Number.isNaN(parsedAnnexNo) ? undefined : String(parsedAnnexNo)
+        annexNo
     };
 }
-function findMatchingAnnex(annexList, annexSelector) {
+/**
+ * 별표 선택값으로 항목 매칭.
+ *
+ * 자치법규 등에서 [별표 N]과 [별지 제N호서식]이 동일 별표번호(bylSeq)를 공유하는 경우가
+ * 있어, 번호만으로 find() 하면 목록 순서상 먼저 오는 항목(주로 서식)이 잘못 선택된다.
+ * (예: 서울특별시 건축 조례 — [별표4] 대지안의 공지기준 / [별지 제4호서식] 공개공지 관리대장이
+ *  모두 별표번호 000400을 가짐.)
+ * 따라서 번호가 일치하는 후보를 모두 모은 뒤, knd(별표/서식 의도)로 별표종류를 구분해
+ * 올바른 항목을 고른다. knd 미지정 시 표(별표)를 서식보다 우선한다.
+ */
+function findMatchingAnnex(annexList, annexSelector, knd) {
     const selectorCandidates = buildSelectorCandidates(annexSelector);
     const selectorNumbers = extractSelectorNumbers(annexSelector);
-    return annexList.find((annex) => {
+    // 번호/제목으로 매칭되는 후보 "전체" 수집 (find → filter)
+    const matches = annexList.filter((annex) => {
         const annexNum = String(annex.별표번호 || "").trim();
         const annexTitle = String(annex.별표명 || "");
         if (annexNum && selectorCandidates.has(annexNum)) {
@@ -269,6 +296,29 @@ function findMatchingAnnex(annexList, annexSelector) {
         }
         return selectorNumbers.some((num) => titleMatchesAnnexNumber(annexTitle, num));
     });
+    if (matches.length === 0) {
+        // 번호가 안 맞아도 별표가 유일 1건이면 그 별표를 정답으로 폴백.
+        // 여권법 시행령 '수수료 및 사무의 대행에 드는 비용(제39조 관련)'처럼 번호 없는 단일 별표는
+        // 모델이 "별표1" 등 임의 번호로 불러도 매칭 0건 → NOT_FOUND로 새는 대신 유일 별표를 반환.
+        if (annexList.length === 1)
+            return annexList[0];
+        return undefined;
+    }
+    if (matches.length === 1)
+        return matches[0];
+    // 별표번호 충돌 → 별표종류("별표"/"서식")로 구분
+    const isForm = (a) => /서식/.test(String(a.별표종류 || ""));
+    const isTable = (a) => /별표/.test(String(a.별표종류 || ""));
+    if (knd === "2" || knd === "4") {
+        // 서식을 명시적으로 요청
+        return matches.find(isForm) || matches[0];
+    }
+    if (knd === "1" || knd === "3") {
+        // 별표를 명시적으로 요청
+        return matches.find(isTable) || matches[0];
+    }
+    // knd 미지정/전체(5): 표(별표)를 서식보다 우선
+    return matches.find(isTable) || matches[0];
 }
 function buildSelectorCandidates(selector) {
     const candidates = new Set();

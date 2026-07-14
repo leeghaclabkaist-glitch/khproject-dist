@@ -7,6 +7,7 @@ import { lawCache } from "../lib/cache.js";
 import { buildJO } from "../lib/law-parser.js";
 import { cleanHtml, flattenContent } from "../lib/article-parser.js";
 import { formatToolError } from "../lib/errors.js";
+import { toArray } from "../lib/xml-parser.js";
 export const GetArticleDetailSchema = z.object({
     mst: z.string().optional().describe("법령일련번호 (search_law에서 획득)"),
     lawId: z.string().optional().describe("법령ID (search_law에서 획득)"),
@@ -25,17 +26,6 @@ export async function getArticleDetail(apiClient, input) {
         if (/제\d+조/.test(joCode)) {
             joCode = buildJO(joCode);
         }
-        // HANG, HO 파라미터를 API가 요구하는 6자리 포맷으로 변환 (예: 2 -> 000200, 10의2 -> 001002)
-        const formatSubNumber = (val) => {
-            const v = val.replace(/^제/, '').replace(/[항호]$/, '').trim();
-            if (/^\d{6}$/.test(v))
-                return v;
-            const match = v.match(/^(\d+)(?:의(\d+))?$/);
-            if (match) {
-                return match[1].padStart(4, "0") + (match[2] || "0").padStart(2, "0");
-            }
-            return v;
-        };
         const extraParams = {};
         if (input.mst)
             extraParams.MST = String(input.mst);
@@ -43,17 +33,17 @@ export async function getArticleDetail(apiClient, input) {
             extraParams.ID = String(input.lawId);
         extraParams.JO = String(joCode);
         if (input.hang)
-            extraParams.HANG = formatSubNumber(input.hang);
+            extraParams.HANG = String(input.hang);
         if (input.ho)
-            extraParams.HO = formatSubNumber(input.ho);
+            extraParams.HO = String(input.ho);
         if (input.mok)
             extraParams.MOK = String(input.mok);
         const jsonText = await apiClient.fetchApi({
             endpoint: "lawService.do",
-            target: "eflawjosub",
+            target: "eflaw",
             type: "JSON",
             extraParams,
-            apiKey: input.apiKey || "REDACTED_API_KEY"
+            apiKey: input.apiKey
         });
         const json = JSON.parse(jsonText);
         const lawData = json?.법령;
@@ -63,34 +53,33 @@ export async function getArticleDetail(apiClient, input) {
                 isError: true
             };
         }
-        // eflawjosub 응답은 lawData가 배열일 수 있으므로 유연하게 처리
-        const basicInfo = Array.isArray(lawData) ? lawData[0] : (lawData.기본정보 || lawData);
+        const basicInfo = lawData.기본정보 || lawData;
         const lawName = basicInfo?.법령명_한글 || basicInfo?.법령명한글 || basicInfo?.법령명 || "알 수 없음";
-        // 전체 법령 캐시를 통해 편장절관 계층구조(위치) 파악
+        // KH: 전체 법령 캐시를 통해 편장절관 계층구조(위치) 파악
         let hierarchyText = "";
         try {
             const fullJsonCacheKey = `lawjson:${input.mst || input.lawId}:current`;
             let fullJsonText = lawCache.get(fullJsonCacheKey);
             if (!fullJsonText) {
-                const extraParams = {};
+                const fullExtraParams = {};
                 if (input.mst)
-                    extraParams.MST = input.mst;
+                    fullExtraParams.MST = input.mst;
                 if (input.lawId)
-                    extraParams.ID = input.lawId;
+                    fullExtraParams.ID = input.lawId;
                 fullJsonText = await apiClient.fetchApi({
                     endpoint: "lawService.do",
                     target: "law",
                     type: "JSON",
-                    extraParams,
-                    apiKey: input.apiKey || "REDACTED_API_KEY"
+                    extraParams: fullExtraParams,
+                    apiKey: input.apiKey
                 });
                 lawCache.set(fullJsonCacheKey, fullJsonText, 24 * 60 * 60 * 1000);
             }
             const fullData = JSON.parse(fullJsonText);
-            const rawUnits = fullData?.법령?.조문?.조문단위;
-            const units = Array.isArray(rawUnits) ? rawUnits : rawUnits ? [rawUnits] : [];
+            const rawFullUnits = fullData?.법령?.조문?.조문단위;
+            const fullUnits = Array.isArray(rawFullUnits) ? rawFullUnits : rawFullUnits ? [rawFullUnits] : [];
             let currentPyeon = "", currentJang = "", currentJeol = "", currentGwan = "";
-            for (const unit of units) {
+            for (const unit of fullUnits) {
                 const unitType = unit.조문여부?.trim();
                 let unitTitle = unit.조문제목?.trim() || "";
                 if (!unitTitle && unit.조문내용) {
@@ -146,7 +135,7 @@ export async function getArticleDetail(apiClient, input) {
             }
         }
         catch (e) {
-            // 계층 정보 추출 실패 무시
+            // 계층 정보 추출 실패 무시 (본문 조회 자체는 정상 진행)
         }
         // 조회 위치 표시
         let locationLabel = `제${input.jo.replace(/^제/, "").replace(/조$/, "")}조`;
@@ -159,13 +148,12 @@ export async function getArticleDetail(apiClient, input) {
         if (input.mok)
             locationLabel += ` ${input.mok}목`;
         let resultText = `법령명: ${lawName}\n`;
-        if (hierarchyText) {
+        if (hierarchyText)
             resultText += hierarchyText;
-        }
         resultText += `조회 위치: ${locationLabel}\n\n`;
         // 조문 추출
-        const rawUnits = lawData.조문?.조문단위 || (Array.isArray(lawData) ? lawData : [lawData]);
-        const articleUnits = Array.isArray(rawUnits) ? rawUnits : rawUnits ? [rawUnits] : [];
+        const rawUnits = lawData.조문?.조문단위;
+        const articleUnits = toArray(rawUnits);
         if (articleUnits.length === 0) {
             return {
                 content: [{ type: "text", text: resultText + "[NOT_FOUND] 해당 조문을 찾을 수 없습니다.\n⚠️ LLM은 조문 내용을 추측/생성하지 마세요." }],
@@ -173,8 +161,7 @@ export async function getArticleDetail(apiClient, input) {
             };
         }
         for (const unit of articleUnits) {
-            // eflawjosub 응답에 조문여부가 생략될 수 있으므로, 명시적으로 다른 타입인 경우만 스킵
-            if (unit.조문여부 && unit.조문여부 !== "조문")
+            if (unit.조문여부 !== "조문")
                 continue;
             const joNum = unit.조문번호 || "";
             const joBranch = unit.조문가지번호 || "";
@@ -188,16 +175,6 @@ export async function getArticleDetail(apiClient, input) {
             if (unit.조문내용) {
                 const content = typeof unit.조문내용 === "string" ? unit.조문내용 : String(unit.조문내용);
                 resultText += `${cleanHtml(content)}\n`;
-            }
-            // 평탄화된 응답 구조 지원 (eflawjosub의 경우 항/호/목 내용이 직렬화되어 반환될 수 있음)
-            if (unit.항내용 && !unit.항) {
-                resultText += `  ${unit.항번호 ? `(${unit.항번호}) ` : ""}${cleanHtml(String(unit.항내용))}\n`;
-            }
-            if (unit.호내용 && !unit.호) {
-                resultText += `    ${unit.호번호 ? `${unit.호번호}. ` : ""}${cleanHtml(String(unit.호내용))}\n`;
-            }
-            if (unit.목내용 && !unit.목) {
-                resultText += `      ${unit.목번호 ? `${unit.목번호}. ` : ""}${cleanHtml(String(unit.목내용))}\n`;
             }
             // 항 내용
             if (unit.항) {

@@ -1,6 +1,7 @@
 /**
  * 통일된 에러 처리 모듈
  */
+import { maskSensitiveUrl } from "./fetch-with-retry.js";
 /**
  * 에러 코드
  */
@@ -114,7 +115,8 @@ export function formatToolError(error, context) {
         suggestions = [];
     }
     const lines = [];
-    lines.push(`[${code}] ${msg}`);
+    // 최종 방어선 — 도구 코드가 URL 포함 에러를 직접 만들어도 API 키가 클라이언트로 새지 않게
+    lines.push(`[${code}] ${maskSensitiveUrl(msg)}`);
     if (context) {
         lines.push(`도구: ${context}`);
     }

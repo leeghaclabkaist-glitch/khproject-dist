@@ -22,6 +22,8 @@ export declare const VerifyCitationsSchema: z.ZodObject<{
     apiKey: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type VerifyCitationsInput = z.infer<typeof VerifyCitationsSchema>;
+export declare function lawNameCandidates(lawName: string): string[];
+export declare function looseMatchLawName(target: string, official: string): boolean;
 export declare function verifyCitations(apiClient: LawApiClient, input: VerifyCitationsInput): Promise<{
     content: Array<{
         type: string;

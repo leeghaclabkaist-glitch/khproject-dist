@@ -5,12 +5,13 @@ import { z } from "zod";
 import { buildJO } from "../lib/law-parser.js";
 import { lawCache } from "../lib/cache.js";
 import { formatArticleUnit, flattenContent } from "../lib/article-parser.js";
+import { getStrategyWarning } from "../lib/article-warnings.js";
 import { formatToolError } from "../lib/errors.js";
 import { MAX_RESPONSE_SIZE, truncateResponse } from "../lib/schemas.js";
 export const GetLawTextSchema = z.object({
     mst: z.string().optional().describe("법령일련번호 (search_law에서 획득)"),
     lawId: z.string().optional().describe("법령ID (search_law에서 획득)"),
-    jo: z.string().optional().describe("조문 번호 (예: '제38조'). 특정 편/장/절(예: '제2장') 전체가 필요한 경우 이 값을 비우고 전체 목차를 먼저 조회한 뒤, 목차를 보고 get_batch_articles로 해당 조문들을 일괄 조회하세요."),
+    jo: z.string().optional().describe("조문 번호 (예: '제38조' 또는 '003800')"),
     efYd: z.string().optional().describe("시행일자 (YYYYMMDD 형식)"),
     apiKey: z.string().optional().describe("법제처 Open API 인증키(OC). 사용자가 제공한 경우 전달")
 }).refine(data => data.mst || data.lawId, {
@@ -46,10 +47,11 @@ export async function getLawText(apiClient, input) {
             };
         }
         // 전체 법령 JSON 캐싱 (다른 조문 요청 시에도 계층 추적 위해 재사용)
+        // KH: 편/장/절/관 계층 구조가 누락되는 eflaw+JO(서버 필터링) 대신,
+        // 명시적으로 target="law" 전체 조문 API를 호출해 클라이언트에서 위치를 추적한다.
         const fullJsonCacheKey = `lawjson:${input.mst || input.lawId}:${input.efYd || 'current'}`;
         let jsonText = lawCache.get(fullJsonCacheKey);
         if (!jsonText) {
-            // 계층 구조가 누락되는 eflaw 대신, 명시적으로 target="law" API 호출
             const extraParams = {};
             if (input.mst)
                 extraParams.MST = input.mst;
@@ -104,11 +106,26 @@ export async function getLawText(apiClient, input) {
         const lawName = basicInfo?.법령명_한글 || basicInfo?.법령명한글 || basicInfo?.법령명 || "알 수 없음";
         const promDate = basicInfo?.공포일자 || "";
         const effDate = basicInfo?.시행일자 || basicInfo?.최종시행일자 || "";
+        const prevLawName = basicInfo?.이전법령명 || "";
         let resultText = `법령명: ${lawName}\n`;
+        if (prevLawName)
+            resultText += `(구 법령명: ${prevLawName} — 개정/분법으로 명칭 변경됨)\n`;
         if (promDate)
             resultText += `공포일: ${promDate}\n`;
         if (effDate)
             resultText += `시행일: ${effDate}\n`;
+        // 현행성 라벨: LLM이 옛 버전 조문을 현행으로 오인하지 않도록
+        // 조회 시점 날짜와 시행일자를 비교해 명시
+        const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        if (input.efYd) {
+            resultText += `⚠️ 특정 시행일자(efYd=${input.efYd}) 버전 조회 — 현행 법령이 아닐 수 있음. 현행 기준 답변에는 efYd 없이 재조회할 것.\n`;
+        }
+        else if (effDate && String(effDate) > today) {
+            resultText += `⚠️ 시행 예정 버전 (조회기준일 ${today} 현재 미시행). 현재 효력 있는 조문과 다를 수 있음.\n`;
+        }
+        else if (effDate) {
+            resultText += `ℹ️ 조회기준일 ${today} — 위 시행일 버전 본문. 연혁 MST로 조회한 경우 과거 버전일 수 있으니, 개정 여부가 의심되면 search_law로 [현행] MST를 재확인할 것.\n`;
+        }
         resultText += `\n`;
         // 조문 내용 추출 (정확한 경로: 법령.조문.조문단위)
         // 주의: 조문단위는 배열 또는 객체일 수 있음
@@ -165,6 +182,7 @@ export async function getLawText(apiClient, input) {
         }
         // 조문 미지정 시 전체 법령 대신 목차(조문 제목 목록)만 반환
         // 대형 법령(국가공무원법 등)의 "too large content" 에러 방지
+        // KH: 목차에 [편/장/절/관] 계층 헤더를 함께 표기
         if (!input.jo && articleUnits.length > 20) {
             const tocItems = [];
             let articleCount = 0;
@@ -178,6 +196,7 @@ export async function getLawText(apiClient, input) {
                     tocItems.push(`\n[${unitTitle}]`);
                 }
                 else if (unitType === "전문") {
+                    // "전문" 안에 편장절관이 텍스트 배열로 들어있는 경우 (예: 민법, 산업안전보건법 등)
                     let rawStr = typeof unit.조문내용 === "string" ? unit.조문내용 : JSON.stringify(unit.조문내용 || "");
                     const fragments = String(rawStr).replace(/<[^>]+>/g, " ").split(/["'\[\],]|\\[rn]|<br>/i).map((s) => s.trim()).filter(Boolean);
                     for (const frag of fragments) {
@@ -208,15 +227,18 @@ export async function getLawText(apiClient, input) {
                 tocText += `lawId="${input.lawId}", jo="제XX조")`;
             }
             tocText += `\n여러 조문 일괄 조회: get_batch_articles 도구 사용`;
-            lawCache.set(cacheKey, tocText);
+            // 절단본을 캐시 — 캐시 히트 경로는 절단 없이 반환하므로 미절단 캐시 시 50KB 제한 우회됨
+            const truncatedToc = truncateResponse(tocText);
+            lawCache.set(cacheKey, truncatedToc);
             return {
                 content: [{
                         type: "text",
-                        text: truncateResponse(tocText)
+                        text: truncatedToc
                     }]
             };
         }
         if (input.jo) {
+            // KH: 특정 조문 조회 시 편/장/절/관 계층 위치를 추적하며 헤더에 표기
             let currentPyeon = "", currentJang = "", currentJeol = "", currentGwan = "";
             let foundArticle = false;
             for (const unit of articleUnits) {
@@ -281,6 +303,10 @@ export async function getLawText(apiClient, input) {
                         if (formatted.body)
                             resultText += `${formatted.body}\n\n`;
                     }
+                    // 민법 의사표시 하자 조문(107~110)에 전략 경고 주입
+                    const warning = getStrategyWarning(lawName, unit.조문번호 || "", unit.조문가지번호 || "");
+                    if (warning)
+                        resultText += `${warning}\n\n`;
                     break;
                 }
             }
@@ -294,6 +320,7 @@ export async function getLawText(apiClient, input) {
             }
         }
         else {
+            // KH: jo 미지정 + 20개 이하 조문인 경우, 조문 사이사이에 [편/장/절/관] 헤더 삽입
             for (const unit of articleUnits) {
                 const unitType = unit.조문여부?.trim();
                 let unitTitle = unit.조문제목?.trim() || "";
@@ -319,6 +346,10 @@ export async function getLawText(apiClient, input) {
                     resultText += `${formatted.header}\n`;
                 if (formatted.body)
                     resultText += `${formatted.body}\n\n`;
+                // 민법 의사표시 하자 조문(107~110)에 전략 경고 주입
+                const warning = getStrategyWarning(lawName, unit.조문번호 || "", unit.조문가지번호 || "");
+                if (warning)
+                    resultText += `${warning}\n\n`;
             }
         }
         // 응답 크기 제한 - 조문 경계에서 자르기 (mid-article 절단 방지)

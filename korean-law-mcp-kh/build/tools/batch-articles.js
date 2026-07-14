@@ -34,6 +34,7 @@ async function fetchArticlesForLaw(apiClient, lawReq, efYd, apiKey) {
         fullLawData = cached;
     }
     else {
+        // KH: 편/장/절/관 계층 구조가 누락되는 eflaw 대신, 명시적으로 target="law" API 호출
         const extraParams = {};
         if (lawReq.mst)
             extraParams.MST = lawReq.mst;
@@ -82,6 +83,7 @@ async function fetchArticlesForLaw(apiClient, lawReq, efYd, apiKey) {
     }
     let resultText = `${lawName}\n`;
     let foundCount = 0;
+    // KH: 편/장/절/관 계층 위치를 추적하며 각 조문 앞에 [위치: ...] 표기
     let currentPyeon = "", currentJang = "", currentJeol = "", currentGwan = "";
     for (const unit of articleUnits) {
         const unitType = unit.조문여부?.trim();

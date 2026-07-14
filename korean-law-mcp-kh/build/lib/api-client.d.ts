@@ -21,10 +21,17 @@ export declare class LawApiClient {
     /** 응답 본문이 HTML 에러 페이지인지 확인 */
     private checkHtmlError;
     /**
+     * 빈 응답 감지 — 법제처가 간헐 장애 시 200으로 빈 본문을 반환하는 케이스.
+     * 그대로 XML 파서에 넘기면 "missing root element"로 터지므로 명확한 메시지로 전환.
+     * (fetchWithRetry가 빈/HTML 응답을 재시도하지만, 재시도 소진 후에도 빈 응답이면 여기서 처리)
+     */
+    private checkEmptyResponse;
+    /**
      * 법령 검색
      * @param display 결과 개수 (기본값 법제처 API default, 짧은 법령명("상법" 등) 정확 매칭 찾으려면 큰 값 권장)
+     * @param target "law"=현행법령(기본), "eflaw"=시행일 기준(시행예정 포함)
      */
-    searchLaw(query: string, apiKey?: string, display?: number): Promise<string>;
+    searchLaw(query: string, apiKey?: string, display?: number, target?: "law" | "eflaw"): Promise<string>;
     /**
      * 현행법령 조회
      */

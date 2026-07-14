@@ -18,7 +18,8 @@ import { z } from "zod";
 import { findLaws } from "../lib/law-search.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
-import { searchPrecedents } from "./precedents.js";
+import { renderPrecedentSearchResult } from "./precedents.js";
+import { searchPrecedentsStructured } from "./precedent-search-core.js";
 import { searchInterpretations } from "./interpretations.js";
 import { searchAdminAppeals } from "./admin-appeals.js";
 import { searchOrdinance } from "./ordinance-search.js";
@@ -41,6 +42,19 @@ handler, apiClient, input) {
     catch (e) {
         return { text: e instanceof Error ? e.message : String(e), isError: true };
     }
+}
+async function searchPrecedentsWithoutFallback(apiClient, input) {
+    const result = await searchPrecedentsStructured(apiClient, {
+        ...input,
+        display: input.display ?? 10,
+        page: input.page ?? 1,
+    }, {
+        fallbackPolicy: "none",
+    });
+    return {
+        content: [{ type: "text", text: renderPrecedentSearchResult(result) }],
+        isError: result.hits.length === 0 || undefined,
+    };
 }
 /** 도구 결과에서 카운트 + 상위 항목 추출. NOT_FOUND나 isError면 0/빈배열 */
 function parseBucket(result, n) {
@@ -132,7 +146,7 @@ export async function impactMap(apiClient, input) {
         // 2. 병렬 탐색
         const [articleR, precR, interpR, appealR, constR, ordinanceR] = await Promise.all([
             safeCall(getArticleDetail, apiClient, { mst: law.mst, jo: joDisplay, apiKey: input.apiKey }),
-            safeCall(searchPrecedents, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
+            safeCall(searchPrecedentsWithoutFallback, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
             safeCall(searchInterpretations, apiClient, { query: searchQuery, display: 10, apiKey: input.apiKey }),
             safeCall(searchAdminAppeals, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),
             safeCall(searchConstitutionalDecisions, apiClient, { query: searchQuery, display: 5, apiKey: input.apiKey }),

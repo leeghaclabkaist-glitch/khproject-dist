@@ -1,6 +1,6 @@
 # KH Project MCP 배포 패키지
 
-**버전:** v0.0.1
+**버전:** v0.0.2
 
 Claude Desktop에서 내부 규정 DB와 국가법령을 검색할 수 있는 MCP 서버 패키지입니다.
 
@@ -139,6 +139,12 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
 ---
 
 ## 릴리스 노트
+
+### v0.0.2
+- `korean-law-mcp-kh`를 원본 upstream 4.0.3 → 4.7.3으로 업데이트
+  (신규: 다단계 리서치, 정밀분석, 시점 비교, 시민 5단계 안내 등)
+- KH 커스텀 기능(편/장/절/관 계층 위치 표시)은 새 버전에도 유지
+- 보안 수정: 이전 빌드에 포함되어 있던 하드코딩 API 키 fallback 제거
 
 ### v0.0.1
 - 최초 배포

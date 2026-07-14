@@ -1,7 +1,7 @@
 /**
  * 대화형 설치 마법사
  *
- * `korean-law-mcp_kh setup` 으로 실행.
+ * `npx korean-law-mcp setup` 으로 실행.
  * API 키를 입력받고, 선택한 AI 클라이언트 설정 파일에 MCP 서버를 자동 등록합니다.
  */
 import { createInterface } from "node:readline/promises";
@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir, platform } from "node:os";
 import { stdin, stdout } from "node:process";
+import { getLawApiProtocol } from "./lib/law-url-config.js";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -88,27 +89,33 @@ async function writeJsonFile(path, data) {
     }
     await writeFile(path, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
-function buildServerEntry(apiKey) {
+function buildServerEntry(apiKey, lawApiProtocol = getLawApiProtocol()) {
     const env = {};
     if (apiKey) {
         env.LAW_OC = apiKey;
     }
+    if (lawApiProtocol === "http") {
+        env.LAW_API_PROTOCOL = lawApiProtocol;
+    }
     return {
-        command: platform() === "win32" ? "korean-law-mcp_kh.cmd" : "korean-law-mcp_kh",
-        args: [],
+        command: "npx",
+        args: ["-y", "korean-law-mcp"],
         env,
     };
 }
 /** Zed는 context_servers 키에 { command: { path, args, env } } 구조 */
-function buildZedEntry(apiKey) {
+function buildZedEntry(apiKey, lawApiProtocol = getLawApiProtocol()) {
     const env = {};
     if (apiKey) {
         env.LAW_OC = apiKey;
     }
+    if (lawApiProtocol === "http") {
+        env.LAW_API_PROTOCOL = lawApiProtocol;
+    }
     return {
         command: {
-            path: platform() === "win32" ? "korean-law-mcp_kh.cmd" : "korean-law-mcp_kh",
-            args: [],
+            path: "npx",
+            args: ["-y", "korean-law-mcp"],
             env,
         },
     };
@@ -165,7 +172,7 @@ async function printBanner() {
         await sleep(60);
     }
     console.log();
-    const tagline = "  MCP Server v3  ━━  법제처 41개 API → 14개 도구";
+    const tagline = "  MCP Server v4  ━━  법제처 42개 API → 17개 도구";
     await typewrite(`${c.dim}${tagline}${c.reset}`, 12);
     console.log();
     const bar = `${c.cyan}  ${"━".repeat(52)}${c.reset}`;
@@ -250,14 +257,15 @@ export async function runSetup() {
         // Step 3: 설정 파일 업데이트
         console.log();
         stepHeader(3, 3, "설정 파일 업데이트");
-        const entry = buildServerEntry(apiKey);
+        const lawApiProtocol = getLawApiProtocol();
+        const entry = buildServerEntry(apiKey, lawApiProtocol);
         for (const idx of indices) {
             const client = clients[idx];
             await sleep(150);
             try {
                 const config = await readJsonFile(client.configPath);
                 const key = client.format;
-                const serverEntry = key === "context_servers" ? buildZedEntry(apiKey) : entry;
+                const serverEntry = key === "context_servers" ? buildZedEntry(apiKey, lawApiProtocol) : entry;
                 const servers = (config[key] ?? {});
                 servers["korean-law"] = serverEntry;
                 config[key] = servers;

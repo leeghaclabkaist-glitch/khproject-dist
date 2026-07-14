@@ -4,7 +4,8 @@
 import { normalizeLawSearchText, resolveLawAlias } from "./search-normalizer.js";
 import { fetchWithRetry } from "./fetch-with-retry.js";
 import { requestContext } from "./session-state.js";
-const LAW_API_BASE = "https://www.law.go.kr/DRF";
+import { getLawApiBaseUrl } from "./law-url-config.js";
+const LAW_API_BASE = getLawApiBaseUrl();
 export class LawApiClient {
     constructor(config) {
         this.defaultApiKey = config.apiKey;
@@ -55,17 +56,28 @@ export class LawApiClient {
         }
     }
     /**
+     * 빈 응답 감지 — 법제처가 간헐 장애 시 200으로 빈 본문을 반환하는 케이스.
+     * 그대로 XML 파서에 넘기면 "missing root element"로 터지므로 명확한 메시지로 전환.
+     * (fetchWithRetry가 빈/HTML 응답을 재시도하지만, 재시도 소진 후에도 빈 응답이면 여기서 처리)
+     */
+    checkEmptyResponse(text, context) {
+        if (!text || !text.trim()) {
+            throw new Error(`${context} - 법제처 API가 빈 응답을 반환했습니다. 일시적 장애일 수 있으니 잠시 후 다시 시도하세요.`);
+        }
+    }
+    /**
      * 법령 검색
      * @param display 결과 개수 (기본값 법제처 API default, 짧은 법령명("상법" 등) 정확 매칭 찾으려면 큰 값 권장)
+     * @param target "law"=현행법령(기본), "eflaw"=시행일 기준(시행예정 포함)
      */
-    async searchLaw(query, apiKey, display) {
+    async searchLaw(query, apiKey, display, target = "law") {
         const normalizedQuery = normalizeLawSearchText(query);
         const aliasResolution = resolveLawAlias(normalizedQuery);
         const finalQuery = aliasResolution.canonical;
         const params = new URLSearchParams({
             OC: this.getApiKey(apiKey),
             type: this.getResponseType(),
-            target: "law",
+            target,
             query: finalQuery,
         });
         if (display && display > 0)
@@ -73,7 +85,10 @@ export class LawApiClient {
         const url = `${LAW_API_BASE}/lawSearch.do?${params.toString()}`;
         const response = await fetchWithRetry(url);
         await this.throwIfError(response, "searchLaw");
-        return await response.text();
+        const text = await response.text();
+        this.checkEmptyResponse(text, "법령 검색");
+        this.checkHtmlError(text, "법령 검색 결과를 받지 못했습니다");
+        return text;
     }
     /**
      * 현행법령 조회
@@ -219,8 +234,8 @@ export class LawApiClient {
         if (/시행령|시행규칙/.test(lawName)) {
             return 'law';
         }
-        // 행정규칙: 훈령, 예규, 고시, 지침, 내규
-        if (/훈령|예규|고시|지침|내규/.test(lawName)) {
+        // 행정규칙: 훈령, 예규, 고시, 지침, 내규, 세칙 (규정/규칙 단독은 시행규칙 오분류 위험 → 4차 fallback에 위임)
+        if (/훈령|예규|고시|지침|내규|세칙/.test(lawName)) {
             return 'admin';
         }
         // 일반 법령 (법, 규정 등)

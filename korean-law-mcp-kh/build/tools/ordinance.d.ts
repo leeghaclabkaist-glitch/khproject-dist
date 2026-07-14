@@ -4,7 +4,8 @@
 import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
 export declare const GetOrdinanceSchema: z.ZodObject<{
-    ordinSeq: z.ZodString;
+    ordinSeq: z.ZodOptional<z.ZodString>;
+    id: z.ZodOptional<z.ZodString>;
     jo: z.ZodOptional<z.ZodString>;
     apiKey: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;

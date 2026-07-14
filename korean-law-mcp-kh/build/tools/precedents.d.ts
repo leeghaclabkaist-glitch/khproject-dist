@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { LawApiClient } from "../lib/api-client.js";
+import { type StructuredPrecedentSearchResult } from "./precedent-search-core.js";
 export declare const searchPrecedentsSchema: z.ZodObject<{
     query: z.ZodOptional<z.ZodString>;
+    search: z.ZodOptional<z.ZodNumber>;
     court: z.ZodOptional<z.ZodString>;
     caseNumber: z.ZodOptional<z.ZodString>;
     display: z.ZodDefault<z.ZodNumber>;
@@ -19,6 +21,7 @@ export declare const searchPrecedentsSchema: z.ZodObject<{
     apiKey: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type SearchPrecedentsInput = z.infer<typeof searchPrecedentsSchema>;
+export declare function renderPrecedentSearchResult(result: StructuredPrecedentSearchResult): string;
 export declare function searchPrecedents(apiClient: LawApiClient, args: SearchPrecedentsInput): Promise<{
     content: Array<{
         type: string;

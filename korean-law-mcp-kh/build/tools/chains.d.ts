@@ -40,8 +40,8 @@ export declare const chainAmendmentTrackSchema: z.ZodObject<{
     mst: z.ZodOptional<z.ZodString>;
     lawId: z.ZodOptional<z.ZodString>;
     scenario: z.ZodOptional<z.ZodEnum<{
-        timeline: "timeline";
         time_travel: "time_travel";
+        timeline: "timeline";
     }>>;
     fromDate: z.ZodOptional<z.ZodString>;
     toDate: z.ZodOptional<z.ZodString>;

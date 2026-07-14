@@ -9,6 +9,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { requestContext } from "../lib/session-state.js";
 import { maskSensitiveUrl } from "../lib/fetch-with-retry.js";
+import { TOOL_COUNTS } from "../tool-registry.js";
 import { VERSION } from "../version.js";
 /**
  * 에러 메시지에서 민감 정보(API 키 포함 URL) scrub.
@@ -37,14 +38,38 @@ export async function startHTTPServer(createServer, port) {
                 ? parseInt(trustProxyRaw, 10)
                 : trustProxyRaw; // CIDR/IP 리스트 패스스루
     app.set("trust proxy", trustProxy);
+    // ACCESS_LOG=1 일 때만 요청 로그 — req.path만 기록 (쿼리스트링의 oc= API 키 유출 방지)
+    if (process.env.ACCESS_LOG === "1") {
+        app.use((req, _res, next) => {
+            console.error(`[access] ${req.method} ${req.path} ip=${req.ip} ua="${req.headers["user-agent"] ?? "-"}"`);
+            next();
+        });
+    }
     app.use(express.json({ limit: process.env.MCP_BODY_LIMIT || "100kb" }));
     // Rate Limiting (RATE_LIMIT_RPM 환경변수, 기본: 60 req/min per IP)
     const rateLimitRpm = parseInt(process.env.RATE_LIMIT_RPM || "60", 10);
     const rateBuckets = new Map();
+    // 단일 POST에 담을 수 있는 tools/call 상한. JSON-RPC 배치는 배열의 요청을
+    // 전부 디스패치하므로(SDK 확인), 카운트 없이 두면 한 요청으로 rate limit·폴백
+    // 쿼터를 배수만큼 우회할 수 있다. 배치 크기를 제한해 증폭을 원천 차단한다.
+    const maxBatchCalls = parseInt(process.env.MCP_MAX_BATCH_CALLS || "20", 10);
     if (rateLimitRpm > 0) {
         app.use((req, res, next) => {
             if (req.path === "/health" || req.path === "/")
                 return next();
+            // 핸드셰이크(initialize)·도구목록(tools/list)·알림은 rate limit 제외.
+            // 이들이 429를 맞으면 클라이언트가 도구 목록을 못 받아 "도구 못 찾음"이 된다.
+            // claude.ai 커넥터는 소수 egress IP로 트래픽이 몰려 IP 버킷을 공유하므로,
+            // 비용 소모 요청(tools/call)에만 게이트한다. (v4.6.2 폴백 게이트와 동일 원칙)
+            // 배치는 tools/call '개수'만큼 카운트한다 (요청당 1회가 아님 — 배치 증폭 방지).
+            const msgs = Array.isArray(req.body) ? req.body : [req.body];
+            const callCount = msgs.filter(m => m?.method === "tools/call").length;
+            if (callCount === 0)
+                return next();
+            if (callCount > maxBatchCalls) {
+                res.status(429).json({ error: `Too many tool calls in one request (max ${maxBatchCalls}).` });
+                return;
+            }
             const ip = req.ip || req.socket.remoteAddress || "unknown";
             const now = Date.now();
             let bucket = rateBuckets.get(ip);
@@ -52,7 +77,7 @@ export async function startHTTPServer(createServer, port) {
                 bucket = { count: 0, resetAt: now + 60000 };
                 rateBuckets.set(ip, bucket);
             }
-            bucket.count++;
+            bucket.count += callCount;
             if (bucket.count > rateLimitRpm) {
                 res.status(429).json({ error: "Too many requests. Try again later." });
                 return;
@@ -97,47 +122,57 @@ export async function startHTTPServer(createServer, port) {
                 health: "/health",
             },
             tools: {
-                exposed: 16,
-                total: 92,
-                description: "V3_EXPOSED 16개 직노출, 나머지 76개는 execute_tool 경유",
+                exposed: TOOL_COUNTS.exposed,
+                total: TOOL_COUNTS.total,
+                description: `V3_EXPOSED ${TOOL_COUNTS.exposed}개 직노출, 나머지 ${TOOL_COUNTS.total - TOOL_COUNTS.exposed}개는 execute_tool 경유`,
             },
         });
     });
     app.get("/health", (req, res) => {
         res.json({ status: "ok", timestamp: new Date().toISOString() });
     });
-    // 🔒 인증 미들웨어 (/mcp 엔드포인트 보호)
-    const serverPassword = process.env.MCP_SERVER_PASSWORD;
-    if (serverPassword) {
-        app.use("/mcp", (req, res, next) => {
-            // 1. 헤더 인증 (Authorization: Bearer 토큰)
-            const authHeader = req.headers.authorization;
-            const headerToken = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
-            // 2. 쿼리 파라미터 인증 (?token=토큰)
-            const queryToken = req.query.token;
-            const providedToken = headerToken || queryToken;
-            if (providedToken !== serverPassword) {
-                console.warn(`[Auth Failed] 잘못된 접근 시도: IP ${req.ip}`);
-                res.status(401).json({ error: "Unauthorized: Invalid Token" });
-                return;
-            }
-            next();
-        });
-    }
-    else {
-        console.warn("⚠️  MCP_SERVER_PASSWORD 환경변수 미설정 — 인증 없이 서버가 개방됩니다.");
+    // 서버 LAW_OC 폴백 사용량 전역 상한 — 키 없는 분산 요청이 서버 키의 법제처 quota를
+    // 소진시키는 것 방지 (IP당 limit만으로는 막을 수 없음). 0이면 폴백 비활성.
+    const fallbackRpm = parseInt(process.env.FALLBACK_RATE_LIMIT_RPM || "120", 10);
+    const fallbackBucket = { count: 0, resetAt: 0 };
+    // n = 이 요청이 소모하는 tools/call 개수 (배치는 배열 길이만큼 서버 키를 쓴다)
+    function fallbackAllowed(n) {
+        if (fallbackRpm <= 0)
+            return false;
+        const now = Date.now();
+        if (now >= fallbackBucket.resetAt) {
+            fallbackBucket.count = 0;
+            fallbackBucket.resetAt = now + 60000;
+        }
+        if (fallbackBucket.count + n > fallbackRpm)
+            return false;
+        fallbackBucket.count += n;
+        return true;
     }
     // POST /mcp - stateless 요청 처리
     app.post("/mcp", async (req, res) => {
-        // Extract API key: URL query > header
-        const apiKeyFromQuery = req.query.oc;
-        const apiKey = apiKeyFromQuery ||
-            req.headers["apikey"] ||
+        // Extract API key: header > URL query
+        // 쿼리스트링 키는 프록시/엣지 액세스 로그에 평문으로 남으므로 헤더 사용 권장 (하위호환용 유지)
+        const apiKey = req.headers["apikey"] ||
             req.headers["law_oc"] ||
             req.headers["law-oc"] ||
             req.headers["x-api-key"] ||
             req.headers["authorization"]?.replace(/^Bearer\s+/i, "") ||
-            req.headers["x-law-oc"];
+            req.headers["x-law-oc"] ||
+            req.query.oc;
+        // 자체 키 없는 요청은 서버 LAW_OC로 폴백 — 전역 상한 적용
+        // initialize/tools/list 등 핸드셰이크는 법제처 쿼터를 안 쓰므로 tools/call만 게이트
+        // (핸드셰이크까지 429로 막으면 claude.ai 커넥터가 도구 목록 자체를 못 싣는다)
+        const bodyMessages = Array.isArray(req.body) ? req.body : [req.body];
+        const fallbackCallCount = bodyMessages.filter((m) => m?.method === "tools/call").length;
+        if (!apiKey && fallbackCallCount > 0 && !fallbackAllowed(fallbackCallCount)) {
+            res.status(429).json({
+                jsonrpc: "2.0",
+                error: { code: -32000, message: "Shared API quota exceeded. Provide your own key via 'apiKey' header (free: https://open.law.go.kr)." },
+                id: null,
+            });
+            return;
+        }
         let server;
         let transport;
         try {
@@ -201,12 +236,22 @@ export async function startHTTPServer(createServer, port) {
         console.error(`✓ MCP endpoint: http://0.0.0.0:${port}/mcp`);
         console.error(`✓ Health check: http://0.0.0.0:${port}/health`);
     });
-    // 종료 처리
-    async function gracefulShutdown(signal) {
+    // 종료 처리 — in-flight 요청 완료 대기 (최대 10초), 이후 강제 종료
+    function gracefulShutdown(signal) {
         console.error(`${signal} received, shutting down server...`);
-        expressServer.close();
-        console.error("Server shutdown complete");
-        process.exit(0);
+        const forceExit = setTimeout(() => {
+            console.error("Shutdown timeout (10s) — forcing exit");
+            process.exit(0);
+        }, 10000);
+        forceExit.unref();
+        // idle keep-alive 연결은 close()가 안 끊는다 → 없으면 항상 10초 타임아웃 후
+        // 비정상 종료로 기록됨. fly 롤링 배포의 clean exit을 위해 명시적으로 끊는다.
+        expressServer.closeIdleConnections();
+        expressServer.close(() => {
+            clearTimeout(forceExit);
+            console.error("Server shutdown complete");
+            process.exit(0);
+        });
     }
     process.on("SIGINT", () => gracefulShutdown("SIGINT"));
     process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

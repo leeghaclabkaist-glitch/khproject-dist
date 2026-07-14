@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { truncateResponse } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
+import { getLawSiteBaseUrl } from "../lib/law-url-config.js";
 export const ExternalLinksSchema = z.object({
     linkType: z.enum(["law", "precedent", "interpretation", "ordinance", "admin_rule"]).describe("링크 유형: law (법령), precedent (판례), interpretation (해석례), ordinance (자치법규), admin_rule (행정규칙)"),
     lawId: z.string().optional().describe("법령ID (법령 링크 생성 시)"),
@@ -15,6 +16,7 @@ export const ExternalLinksSchema = z.object({
     adminRuleId: z.string().optional().describe("행정규칙일련번호 (행정규칙 링크 생성 시)"),
     ordinanceId: z.string().optional().describe("자치법규ID (자치법규 링크 생성 시)")
 });
+const LAW_BASE_URL = getLawSiteBaseUrl();
 export async function getExternalLinks(input) {
     try {
         let resultText = "외부 링크\n\n";
@@ -118,28 +120,28 @@ function generateLawLinks(lawId, mst, lawName, jo) {
     // 1. 한글 URL (법령명 기반) - 우선순위 최상위
     if (lawName) {
         if (jo) {
-            const url = `https://www.law.go.kr/법령/${encodeURIComponent(lawName)}/${encodeURIComponent(jo)}`;
+            const url = `${LAW_BASE_URL}/법령/${encodeURIComponent(lawName)}/${encodeURIComponent(jo)}`;
             links += `${linkNum++}. [법제처 조문 직접 링크](${url})\n\n`;
         }
         else {
-            const url = `https://www.law.go.kr/법령/${encodeURIComponent(lawName)}`;
+            const url = `${LAW_BASE_URL}/법령/${encodeURIComponent(lawName)}`;
             links += `${linkNum++}. [법제처 법령 직접 링크](${url})\n\n`;
         }
     }
     // 2. 법령ID 기반 링크 (쿼리 파라미터)
     if (lawId) {
-        const detailUrl = `https://www.law.go.kr/LSW/lawLsInfoP.do?lsiSeq=${lawId}`;
+        const detailUrl = `${LAW_BASE_URL}/LSW/lawLsInfoP.do?lsiSeq=${lawId}`;
         links += `${linkNum++}. [법제처 법령 상세 (ID)](${detailUrl})\n\n`;
-        const engUrl = `https://www.law.go.kr/eng/LSW/lawLsInfoP.do?lsiSeq=${lawId}`;
+        const engUrl = `${LAW_BASE_URL}/eng/LSW/lawLsInfoP.do?lsiSeq=${lawId}`;
         links += `${linkNum++}. [법령 전문 (영문)](${engUrl})\n\n`;
     }
     // 3. 법령 연혁
     if (mst) {
-        const historyUrl = `https://www.law.go.kr/LSW/lsStmdInfoP.do?lsiSeq=${mst}`;
+        const historyUrl = `${LAW_BASE_URL}/LSW/lsStmdInfoP.do?lsiSeq=${mst}`;
         links += `${linkNum++}. [법령 연혁](${historyUrl})\n\n`;
     }
     // 4. 법제처 홈페이지
-    links += `${linkNum}. [법제처 홈페이지](https://www.law.go.kr/)\n\n`;
+    links += `${linkNum}. [법제처 홈페이지](${LAW_BASE_URL}/)\n\n`;
     return links;
 }
 /**
@@ -147,7 +149,7 @@ function generateLawLinks(lawId, mst, lawName, jo) {
  */
 function generatePrecedentLinks(precedentId) {
     let links = "판례 관련 링크:\n\n";
-    const lawUrl = `https://www.law.go.kr/LSW/precInfoP.do?precSeq=${precedentId}`;
+    const lawUrl = `${LAW_BASE_URL}/LSW/precInfoP.do?precSeq=${precedentId}`;
     links += `1. [법제처 판례 상세](${lawUrl})\n\n`;
     links += `2. [대법원 종합법률정보](https://glaw.scourt.go.kr/)\n`;
     links += `   (판례일련번호: ${precedentId}로 검색)\n\n`;
@@ -159,7 +161,7 @@ function generatePrecedentLinks(precedentId) {
  */
 function generateInterpretationLinks(interpretationId) {
     let links = "법령해석례 관련 링크:\n\n";
-    const detailUrl = `https://www.law.go.kr/LSW/lsExpcInfoP.do?lsExpcSeq=${interpretationId}`;
+    const detailUrl = `${LAW_BASE_URL}/LSW/lsExpcInfoP.do?lsExpcSeq=${interpretationId}`;
     links += `1. [법제처 해석례 상세](${detailUrl})\n\n`;
     links += `2. [법제처 법령해석](https://www.moleg.go.kr/)\n\n`;
     return links;
@@ -173,26 +175,26 @@ function generateOrdinanceLinks(ordinanceId, mst, lawName, jo) {
     // 1. 한글 URL (법령명 기반)
     if (lawName) {
         if (jo) {
-            const url = `https://www.law.go.kr/자치법규/${encodeURIComponent(lawName)}/${encodeURIComponent(jo)}`;
+            const url = `${LAW_BASE_URL}/자치법규/${encodeURIComponent(lawName)}/${encodeURIComponent(jo)}`;
             links += `${linkNum++}. [법제처 조문 직접 링크](${url})\n\n`;
         }
         else {
-            const url = `https://www.law.go.kr/자치법규/${encodeURIComponent(lawName)}`;
+            const url = `${LAW_BASE_URL}/자치법규/${encodeURIComponent(lawName)}`;
             links += `${linkNum++}. [법제처 자치법규 직접 링크](${url})\n\n`;
         }
     }
     // 2. 자치법규ID 기반 링크
     if (ordinanceId) {
-        const detailUrl = `https://www.law.go.kr/LSW/ordinInfoP.do?ordinSeq=${ordinanceId}`;
+        const detailUrl = `${LAW_BASE_URL}/LSW/ordinInfoP.do?ordinSeq=${ordinanceId}`;
         links += `${linkNum++}. [법제처 자치법규 상세 (ID)](${detailUrl})\n\n`;
     }
     // 3. 자치법규 연혁
     if (mst) {
-        const historyUrl = `https://www.law.go.kr/LSW/lsStmdInfoP.do?lsiSeq=${mst}`;
+        const historyUrl = `${LAW_BASE_URL}/LSW/lsStmdInfoP.do?lsiSeq=${mst}`;
         links += `${linkNum++}. [자치법규 연혁](${historyUrl})\n\n`;
     }
     // 4. 국가법령정보센터 자치법규
-    links += `${linkNum++}. [국가법령정보센터 자치법규](https://www.law.go.kr/LSW/lsRvsRqInfoListP.do)\n\n`;
+    links += `${linkNum++}. [국가법령정보센터 자치법규](${LAW_BASE_URL}/LSW/lsRvsRqInfoListP.do)\n\n`;
     // 5. 자치법규정보시스템 (ELIS)
     links += `${linkNum}. [자치법규정보시스템 (ELIS)](https://www.elis.go.kr/)\n\n`;
     return links;
@@ -202,9 +204,9 @@ function generateOrdinanceLinks(ordinanceId, mst, lawName, jo) {
  */
 function generateAdminRuleLinks(adminRuleId) {
     let links = "행정규칙 관련 링크:\n\n";
-    const detailUrl = `https://www.law.go.kr/LSW/admRulInfoP.do?admRulSeq=${adminRuleId}`;
+    const detailUrl = `${LAW_BASE_URL}/LSW/admRulInfoP.do?admRulSeq=${adminRuleId}`;
     links += `1. [법제처 행정규칙 상세](${detailUrl})\n\n`;
-    links += `2. [국가법령정보센터 행정규칙](https://www.law.go.kr/LSW/admRulLsInfoP.do)\n\n`;
-    links += `3. [법제처 홈페이지](https://www.law.go.kr/)\n\n`;
+    links += `2. [국가법령정보센터 행정규칙](${LAW_BASE_URL}/LSW/admRulLsInfoP.do)\n\n`;
+    links += `3. [법제처 홈페이지](${LAW_BASE_URL}/)\n\n`;
     return links;
 }

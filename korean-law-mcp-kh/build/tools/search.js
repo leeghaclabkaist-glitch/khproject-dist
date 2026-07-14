@@ -7,6 +7,9 @@ import { lawCache } from "../lib/cache.js";
 import { truncateResponse } from "../lib/schemas.js";
 import { formatToolError, noResultHint } from "../lib/errors.js";
 import { expandLawQuery, normalizeAliasKey, resolveLawAlias } from "../lib/search-normalizer.js";
+import { buildUpcomingNotes, fetchUpcomingLaws } from "../lib/upcoming-laws.js";
+import { searchAdminRule } from "./admin-rule.js";
+import { searchOrdinance } from "./ordinance-search.js";
 export const SearchLawSchema = z.object({
     query: z.string().describe("검색할 법령명 (예: '관세법', 'fta특례법', '화관법')"),
     display: z.number().optional().default(50).describe("최대 결과 개수 (기본 50 — 짧은 법령명 정확매칭 누락 방지)"),
@@ -24,13 +27,27 @@ function parseLawsXml(xmlText) {
             lawId: n.getElementsByTagName("법령ID")[0]?.textContent || "",
             mst: n.getElementsByTagName("법령일련번호")[0]?.textContent || "",
             promDate: n.getElementsByTagName("공포일자")[0]?.textContent || "",
+            effDate: n.getElementsByTagName("시행일자")[0]?.textContent || "",
+            statusCode: n.getElementsByTagName("현행연혁코드")[0]?.textContent || "",
             lawType: n.getElementsByTagName("법령구분명")[0]?.textContent || "",
         });
     }
     return out;
 }
+// '광진구 복무 조례'처럼 조례 키워드나 지역명 토큰(○○시/군/구)이 있으면 자치법규 쿼리로 판단.
+// '도'는 도로법·양도세 등 오탐이 많아 제외. 토큰 3자 미만('구', '시')도 제외.
+function looksLikeOrdinanceQuery(query) {
+    if (query.includes("조례"))
+        return true;
+    return query.split(/\s+/).some((t) => t.length >= 3 && /[시군구]$/.test(t));
+}
 function formatHit(idx, h) {
-    return `${idx}. ${h.name}\n   - 법령ID: ${h.lawId}\n   - MST: ${h.mst}\n   - 공포일: ${h.promDate}\n   - 구분: ${h.lawType}\n\n`;
+    const status = h.statusCode === "연혁" ? " ⚠️[연혁-과거버전]" : h.statusCode === "현행" ? " [현행]" : "";
+    let line = `${idx}. ${h.name}${status}\n   - 법령ID: ${h.lawId}\n   - MST: ${h.mst}\n   - 공포일: ${h.promDate}`;
+    if (h.effDate)
+        line += ` / 시행일: ${h.effDate}`;
+    line += `\n   - 구분: ${h.lawType}\n\n`;
+    return line;
 }
 export async function searchLaw(apiClient, input) {
     try {
@@ -63,6 +80,46 @@ export async function searchLaw(apiClient, input) {
             }
         }
         if (laws.length === 0) {
+            // 공포됐지만 미시행인 신규 법령은 현행(target=law) 검색에 안 잡힘 → 시행예정 보조검색
+            const upcomingOnly = await fetchUpcomingLaws(apiClient, input.query, input.apiKey);
+            if (upcomingOnly.length > 0) {
+                const text = `현행 법령 0건 — 단, 공포 후 시행 대기 중인 법령이 있습니다:\n\n` +
+                    buildUpcomingNotes([], upcomingOnly) +
+                    `⚠️ 현재 시점에는 아직 효력이 없는 법령입니다. 현행 기준 답변에 인용하지 마세요.\n`;
+                return { content: [{ type: "text", text: truncateResponse(text) }] };
+            }
+            // Fallback: 외국환거래규정·은행업감독규정 등 "규정/고시"는 행정규칙(고시)임.
+            // 일반 법령에 없으면 search_admin_rule 자동 시도.
+            const adminFallback = await searchAdminRule(apiClient, {
+                query: input.query,
+                display: input.display,
+                apiKey: input.apiKey,
+            }).catch(() => null);
+            if (adminFallback && !adminFallback.isError) {
+                const text = adminFallback.content[0]?.text || "";
+                const prefix = `[FALLBACK] 법령 '${input.query}' 0건 → 행정규칙으로 자동 폴백.\n` +
+                    `💡 '규정/고시/훈령/예규/지침'은 행정규칙이며 search_admin_rule이 본 도구입니다.\n\n`;
+                return {
+                    content: [{ type: "text", text: truncateResponse(prefix + text) }],
+                };
+            }
+            // Fallback: 조례·규칙(지자체)은 자치법규라 국가법령 검색에 안 잡힘.
+            // 쿼리가 자치법규 형태면 search_ordinance 자동 시도.
+            if (looksLikeOrdinanceQuery(input.query)) {
+                const ordinFallback = await searchOrdinance(apiClient, {
+                    query: input.query,
+                    display: Math.min(input.display, 100),
+                    apiKey: input.apiKey,
+                }).catch(() => null);
+                if (ordinFallback && !ordinFallback.isError) {
+                    const text = ordinFallback.content[0]?.text || "";
+                    const prefix = `[FALLBACK] 법령 '${input.query}' 0건 → 자치법규로 자동 폴백.\n` +
+                        `💡 조례·규칙(지자체)은 자치법규이며 search_ordinance(execute_tool 경유)가 본 도구입니다.\n\n`;
+                    return {
+                        content: [{ type: "text", text: truncateResponse(prefix + text) }],
+                    };
+                }
+            }
             return noResultHint(input.query, "법령");
         }
         // 정확매칭 분리: 법제처 API는 LIKE 검색 + 가나다순 정렬이라
@@ -70,6 +127,12 @@ export async function searchLaw(apiClient, input) {
         // 법령명/약칭이 사용자 입력(또는 canonical alias)과 정확히 같으면 우선 노출.
         const queryKey = normalizeAliasKey(input.query);
         const canonicalKey = normalizeAliasKey(resolveLawAlias(input.query).canonical);
+        // 현행 우선 정렬: 연혁(과거버전) 법령이 정확매칭 첫 항목으로 노출되면
+        // LLM이 옛 조문을 현행으로 오인해 답변하는 사고가 남 (소방시설법 분법 사례).
+        laws.sort((a, b) => {
+            const rank = (h) => h.statusCode === "연혁" ? 1 : 0;
+            return rank(a) - rank(b);
+        });
         const exact = [];
         const partial = [];
         for (const h of laws) {
@@ -104,10 +167,19 @@ export async function searchLaw(apiClient, input) {
                 resultText += formatHit(counter, partial[i]);
             }
         }
+        // 시행예정 병기: 제명변경 개정(구명칭→신명칭)이 공포~시행 사이면 신명칭 검색 시
+        // "정확매칭 없음"만 떠서 LLM이 "법령 없음"으로 오판 → 신·구 명칭 매핑을 명시
+        const upcoming = await fetchUpcomingLaws(apiClient, usedQuery, input.apiKey);
+        const upcomingNotes = buildUpcomingNotes(laws, upcoming);
+        if (upcomingNotes)
+            resultText += upcomingNotes;
         // 다음 단계 힌트: 정확매칭이 있으면 그 첫 항목, 없으면 부분매칭 첫 항목 안내
         const primary = exact[0] || partial[0];
         if (primary) {
             resultText += `💡 다음: get_law_text(mst="${primary.mst}") 로 「${primary.name}」 조문 전문. 특정 조문만은 jo="제N조" 추가.\n`;
+            if (primary.statusCode === "연혁") {
+                resultText += `⚠️ 위 법령은 **연혁(과거버전)** 입니다. 현행 기준 답변에는 [현행] 표시된 법령의 MST를 사용하세요.\n`;
+            }
         }
         if (exact.length === 0 && laws.length > 0) {
             resultText += `⚠️ 정확매칭 없음 — 법제처 API의 부분 LIKE 검색 특성상 위 결과는 법령명에 "${input.query}"가 포함된 모든 법령입니다. 의도한 법령이 없으면 정식 법령명으로 재검색하세요.\n`;

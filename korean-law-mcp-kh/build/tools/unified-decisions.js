@@ -9,7 +9,7 @@ import { truncateResponse } from "../lib/schemas.js";
 import { formatToolError } from "../lib/errors.js";
 import { compactLongSections } from "../lib/decision-compact.js";
 // 기존 handler 재사용 (함수 직접 import)
-import { searchPrecedents, getPrecedentText } from "./precedents.js";
+import { searchPrecedents, getPrecedentText, renderPrecedentSearchResult } from "./precedents.js";
 import { searchInterpretations, getInterpretationText } from "./interpretations.js";
 import { searchTaxTribunalDecisions, getTaxTribunalDecisionText } from "./tax-tribunal-decisions.js";
 import { searchCustomsInterpretations, getCustomsInterpretationText, searchNtsInterpretations, getNtsInterpretationText, } from "./customs-interpretations.js";
@@ -20,6 +20,8 @@ import { searchAppealReviewDecisions, getAppealReviewDecisionText, searchAcrSpec
 import { searchSchoolRules, getSchoolRuleText, searchPublicCorpRules, getPublicCorpRuleText, searchPublicInstitutionRules, getPublicInstitutionRuleText } from "./institutional-rules.js";
 import { searchTreaties, getTreatyText } from "./treaties.js";
 import { searchEnglishLaw, getEnglishLawText } from "./english-law.js";
+import { searchPrecedentsStructured } from "./precedent-search-core.js";
+import { fetchPrecedentEvidence, validatePrecedentSearchResult } from "./precedent-evidence.js";
 // ========================================
 // Domain enum & config
 // ========================================
@@ -109,6 +111,36 @@ export const SearchDecisionsSchema = z.object({
     options: z.record(z.string(), z.unknown()).optional().describe("도메인별 옵션. prec:{court,caseNumber,fromDate,toDate} tax_tribunal:{cls,gana,dpaYd,rslYd} customs:{inq,rpl,gana,explYd} constitutional:{caseNumber} interpretation:{fromDate,toDate} treaty:{cls,natCd,eftYd,concYd}"),
     apiKey: z.string().optional(),
 });
+function isEnabled(value) {
+    return value === true || value === "true";
+}
+function getPositiveIntegerOption(value) {
+    if (typeof value === "number" && Number.isFinite(value))
+        return Math.trunc(value);
+    if (typeof value === "string" && value.trim()) {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed))
+            return Math.trunc(parsed);
+    }
+    return undefined;
+}
+async function searchPrecedentDecisionsWithText(apiClient, args, detailLimit) {
+    const apiKey = typeof args.apiKey === "string" ? args.apiKey : undefined;
+    const searchResult = await searchPrecedentsStructured(apiClient, args, {
+        validateResult: validation => validatePrecedentSearchResult(apiClient, validation, { apiKey }),
+    });
+    const listText = renderPrecedentSearchResult(searchResult);
+    const evidence = await fetchPrecedentEvidence(apiClient, searchResult, {
+        apiKey,
+        detailLimit,
+        full: false,
+    });
+    const text = evidence ? `${listText}\n\n▶ 관련 판례 상세\n${evidence.text}` : listText;
+    return {
+        content: [{ type: "text", text: truncateResponse(text) }],
+        isError: searchResult.hits.length === 0 || undefined,
+    };
+}
 export async function searchDecisions(apiClient, input) {
     const handler = SEARCH_HANDLERS[input.domain];
     if (!handler) {
@@ -136,6 +168,9 @@ export async function searchDecisions(apiClient, input) {
                 if (!reserved.has(k))
                     args[k] = v;
             }
+        }
+        if (input.domain === "precedent" && isEnabled(input.options?.includeText)) {
+            return await searchPrecedentDecisionsWithText(apiClient, args, getPositiveIntegerOption(input.options?.detailLimit));
         }
         return await handler(apiClient, args);
     }

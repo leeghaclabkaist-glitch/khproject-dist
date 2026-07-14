@@ -3,34 +3,25 @@
  * Korean Law MCP Server
  * 국가법령정보센터 API 기반 MCP 서버
  */
-// [수정] 모듈이 로드되기 전에 가장 먼저 stdout 오염 방지 (stdio 모드 통신 보호)
-const isHttp = process.argv.includes("--mode") && (process.argv.includes("http") || process.argv.includes("sse"));
-if (!isHttp && process.argv[2] !== "setup") {
-    const stderrWrite = (...a) => process.stderr.write(a.map(String).join(" ") + "\n");
-    console.log = console.warn = console.info = console.debug = stderrWrite;
-}
-import dotenv from "dotenv";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { LawApiClient } from "./lib/api-client.js";
 import { registerTools } from "./tool-registry.js";
 import { startHTTPServer } from "./server/http-server.js";
 import { VERSION } from "./version.js";
-// .env 파일 로드
-dotenv.config();
 // API 클라이언트 초기화 (LAW_OC 또는 KOREAN_LAW_API_KEY 지원)
 const LAW_OC = process.env.LAW_OC || process.env.KOREAN_LAW_API_KEY || "";
 const apiClient = new LawApiClient({ apiKey: LAW_OC });
 // MCP 서버 팩토리 (HTTP 모드: 세션마다 새 인스턴스 필요)
 function createServer() {
-    const s = new Server({ name: "korean-law_kh", version: VERSION }, { capabilities: { tools: {} } });
+    const s = new Server({ name: "korean-law", version: VERSION }, { capabilities: { tools: {} } });
     registerTools(s, apiClient);
     return s;
 }
 // 서버 시작
 async function main() {
     const args = process.argv.slice(2);
-    // setup 서브커맨드: korean-law-mcp_kh setup
+    // setup 서브커맨드: npx korean-law-mcp setup
     if (args[0] === "setup") {
         const { runSetup } = await import("./setup.js");
         await runSetup();
@@ -45,6 +36,9 @@ async function main() {
     }
     else {
         // STDIO 모드
+        // stdout 오염 방지: MCP JSON-RPC 프로토콜 보호
+        const stderrWrite = (...args) => process.stderr.write(args.map(String).join(" ") + "\n");
+        console.log = console.warn = console.info = console.debug = stderrWrite;
         const server = createServer();
         const transport = new StdioServerTransport();
         await server.connect(transport);
