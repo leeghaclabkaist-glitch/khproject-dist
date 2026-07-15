@@ -111,18 +111,41 @@ def build_database(
         conn.close()
 
 
-def search_rules(
-    query: str,
-    limit: int = 10,
-    org: str | None = None,
-    db_path: str | Path = DEFAULT_DB_PATH,
-) -> list[dict[str, Any]]:
-    query = query.strip()
-    if not query:
-        return []
+# 규정 종류(doc_type) 파생용 접미어 토큰. rule_id 접두어는 신뢰할 수 없어
+# (과거 규정번호·부설_ 접두어 충돌 이력) 제목 접미어에서 파생한다.
+_DOC_TYPE_TOKENS = ("규정", "방침", "요령", "지침", "규칙", "정관", "강령", "기준")
 
-    like_query = f"%{query}%"
+
+def _derive_doc_type(title: str) -> str:
+    """규정 제목에서 종류를 파생한다(규정/방침/요령/…). 판별 불가 시 '기타'.
+
+    괄호 이하(개정일 등)를 제거한 본문에서 유형 토큰 중 '가장 뒤에' 등장하는 것을
+    택한다. 예: '경력산정기준방침 …' → 기준(앞) 보다 방침(뒤) 우선.
+    """
+    base = re.split(r"[(\[]", title or "", maxsplit=1)[0]
+    best_tok, best_pos = "기타", -1
+    for tok in _DOC_TYPE_TOKENS:
+        pos = base.rfind(tok)
+        if pos > best_pos:
+            best_pos, best_tok = pos, tok
+    return best_tok
+
+
+def list_rules(
+    org: str | None = None,
+    doc_type: str | None = None,
+    current_only: bool = True,
+    limit: int = 500,
+    offset: int = 0,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """규정을 전수 조회한다(query 불필요).
+
+    org=None 이면 전체 기관. doc_type 지정 시 해당 종류만. current_only=True 면 현행만.
+    반환: {"total", "count", "offset", "rules": [...]} — rules 각 항목에 doc_type 포함.
+    """
     org_filter = "AND r.org_id = :org" if org else ""
+    current_filter = "AND r.is_current = 1" if current_only else ""
     primary_expr, primary_params = _primary_named("r.org_id")
     with connect(db_path) as conn:
         rows = conn.execute(
@@ -136,27 +159,194 @@ def search_rules(
                 COUNT(c.id) AS chunk_count
             FROM rules r
             LEFT JOIN chunks c ON c.org_id = r.org_id AND c.rule_id = r.rule_id
-            WHERE (r.rule_title LIKE :like OR r.rule_id LIKE :like)
-              {org_filter}
+            WHERE 1 = 1 {org_filter} {current_filter}
             GROUP BY r.org_id, r.rule_id
-            ORDER BY is_primary DESC, r.is_current DESC, r.rule_title
-            LIMIT :limit
+            ORDER BY is_primary DESC, r.rule_title
             """,
-            {"like": like_query, "org": org, "limit": limit, **primary_params},
+            {"org": org, **primary_params},
         ).fetchall()
-    return [_row_to_dict(row) for row in rows]
+
+    items = [_row_to_dict(row) for row in rows]
+    for item in items:
+        item["doc_type"] = _derive_doc_type(item.get("rule_title", ""))
+    if doc_type and doc_type.strip():
+        want = doc_type.strip()
+        items = [it for it in items if it["doc_type"] == want]
+
+    total = len(items)
+    offset = max(0, offset)
+    page = items[offset:]
+    if limit is not None and limit >= 0:
+        page = page[:limit]
+    return {"total": total, "count": len(page), "offset": offset, "rules": page}
+
+
+def count_rules(
+    org: str | None = None,
+    current_only: bool = True,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """규정 개수를 집계한다(query 불필요).
+
+    반환: {"total", "by_doc_type": {...}, "by_org": {...}}.
+    org=None 이면 전체 기관, 지정 시 해당 기관만.
+    """
+    from collections import Counter
+
+    org_filter = "AND org_id = :org" if org else ""
+    current_filter = "AND is_current = 1" if current_only else ""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT org_id, rule_title
+            FROM rules
+            WHERE 1 = 1 {org_filter} {current_filter}
+            """,
+            {"org": org},
+        ).fetchall()
+
+    by_doc_type: Counter = Counter()
+    by_org: Counter = Counter()
+    for row in rows:
+        by_doc_type[_derive_doc_type(row["rule_title"])] += 1
+        by_org[row["org_id"]] += 1
+    return {
+        "total": len(rows),
+        "by_doc_type": dict(by_doc_type.most_common()),
+        "by_org": dict(by_org.most_common()),
+    }
+
+
+def search_rules(
+    query: str,
+    limit: int = 10,
+    org: str | None = None,
+    offset: int = 0,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """규정을 검색한다. 제목·ID(LIKE)뿐 아니라 본문(FTS bm25)까지 대상으로 하며
+    관련도순으로 정렬한다. offset 으로 페이지네이션 가능.
+
+    정렬: primary 기관 → 제목/ID 직접 일치 → 본문 관련도(bm25) → 현행 → 제목.
+    각 결과에 doc_type(규정/방침/요령…)을 파생해 포함한다.
+    """
+    query = query.strip()
+    if not query:
+        return []
+
+    like_query = f"%{query}%"
+    org_filter = "AND r.org_id = :org" if org else ""
+    primary_expr, primary_params = _primary_named("r.org_id")
+    params = {
+        "q": _fts_query(query),
+        "like": like_query,
+        "org": org,
+        "limit": limit,
+        "offset": max(0, offset),
+        **primary_params,
+    }
+    with connect(db_path) as conn:
+        # 본문 관련도: FTS bm25 점수를 임시 테이블로 실체화한 뒤 규정별 최적 점수로 집계.
+        # (bm25()는 aggregate 인자나 join/CTE 경유가 불가하므로 직접 SELECT로 먼저 저장한다.)
+        body_ok = True
+        try:
+            conn.execute("DROP TABLE IF EXISTS temp._body_scores")
+            conn.execute(
+                """
+                CREATE TEMP TABLE _body_scores AS
+                SELECT c.org_id AS oid, c.rule_id AS rid, bm25(chunks_fts) AS s
+                FROM chunks_fts
+                JOIN chunks c ON c.id = chunks_fts.rowid
+                WHERE chunks_fts MATCH :q
+                """,
+                {"q": params["q"]},
+            )
+            # trigram FTS는 3글자 미만 질의를 못 잡는다. 매칭이 비면 본문 LIKE로
+            # 멤버십만 보완(점수 NULL → FTS 매칭 뒤에 정렬).
+            if conn.execute("SELECT COUNT(*) FROM _body_scores").fetchone()[0] == 0:
+                like_org = "AND c.org_id = :org" if org else ""
+                conn.execute(
+                    f"""
+                    INSERT INTO _body_scores(oid, rid, s)
+                    SELECT DISTINCT c.org_id, c.rule_id, NULL
+                    FROM chunks c
+                    WHERE c.text LIKE :like {like_org}
+                    """,
+                    {"like": like_query, "org": org},
+                )
+        except sqlite3.OperationalError:
+            body_ok = False       # FTS5 미지원 환경
+
+        if body_ok:
+            rows = conn.execute(
+                f"""
+                WITH body AS (
+                    SELECT oid, rid, MIN(s) AS best_score
+                    FROM _body_scores GROUP BY oid, rid
+                )
+                SELECT
+                    r.org_id,
+                    r.rule_id,
+                    r.rule_title,
+                    r.is_current,
+                    {primary_expr} AS is_primary,
+                    COUNT(c.id) AS chunk_count,
+                    ((r.rule_title LIKE :like) OR (r.rule_id LIKE :like)) AS title_hit,
+                    b.best_score AS score
+                FROM rules r
+                LEFT JOIN chunks c ON c.org_id = r.org_id AND c.rule_id = r.rule_id
+                LEFT JOIN body   b ON b.oid = r.org_id AND b.rid = r.rule_id
+                WHERE ((r.rule_title LIKE :like) OR (r.rule_id LIKE :like)
+                       OR b.rid IS NOT NULL)
+                  {org_filter}
+                GROUP BY r.org_id, r.rule_id
+                ORDER BY is_primary DESC, title_hit DESC,
+                         (score IS NULL), score,
+                         r.is_current DESC, r.rule_title
+                LIMIT :limit OFFSET :offset
+                """,
+                params,
+            ).fetchall()
+            conn.execute("DROP TABLE IF EXISTS temp._body_scores")
+        else:
+            # 제목/ID LIKE 전용 폴백
+            rows = conn.execute(
+                f"""
+                SELECT
+                    r.org_id,
+                    r.rule_id,
+                    r.rule_title,
+                    r.is_current,
+                    {primary_expr} AS is_primary,
+                    COUNT(c.id) AS chunk_count
+                FROM rules r
+                LEFT JOIN chunks c ON c.org_id = r.org_id AND c.rule_id = r.rule_id
+                WHERE (r.rule_title LIKE :like OR r.rule_id LIKE :like)
+                  {org_filter}
+                GROUP BY r.org_id, r.rule_id
+                ORDER BY is_primary DESC, r.is_current DESC, r.rule_title
+                LIMIT :limit OFFSET :offset
+                """,
+                params,
+            ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    for row in result:
+        row["doc_type"] = _derive_doc_type(row.get("rule_title", ""))
+    return result
 
 
 def search_articles(
     query: str,
     limit: int = 10,
     org: str | None = None,
+    offset: int = 0,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
     query = query.strip()
     if not query:
         return []
 
+    offset = max(0, offset)
     org_filter = "AND c.org_id = :org" if org else ""
     primary_expr, primary_params = _primary_named("c.org_id")
     with connect(db_path) as conn:
@@ -186,14 +376,15 @@ def search_articles(
                 WHERE chunks_fts MATCH :q
                   {org_filter}
                 ORDER BY is_primary DESC, score
-                LIMIT :limit
+                LIMIT :limit OFFSET :offset
                 """,
-                {"q": _fts_query(query), "org": org, "limit": limit, **primary_params},
+                {"q": _fts_query(query), "org": org, "limit": limit,
+                 "offset": offset, **primary_params},
             ).fetchall()
         except sqlite3.OperationalError:
-            rows = _like_search(conn, query, limit, org=org)
+            rows = _like_search(conn, query, limit, org=org, offset=offset)
         if not rows:
-            rows = _like_search(conn, query, limit, org=org)
+            rows = _like_search(conn, query, limit, org=org, offset=offset)
     return [_row_to_dict(row) for row in rows]
 
 
@@ -618,6 +809,7 @@ def _like_search(
     query: str,
     limit: int,
     org: str | None = None,
+    offset: int = 0,
 ) -> list[sqlite3.Row]:
     terms = [term for term in re.split(r"\s+", query.strip()) if term]
     if not terms:
@@ -637,6 +829,7 @@ def _like_search(
     primary_expr, primary_list = _primary_pos()
     params.extend(primary_list)
     params.append(limit)
+    params.append(max(0, offset))
 
     return conn.execute(
         f"""
@@ -662,7 +855,7 @@ def _like_search(
         WHERE {term_clauses}
           {org_filter}
         ORDER BY is_primary DESC, is_current DESC, id
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
         params,
     ).fetchall()
