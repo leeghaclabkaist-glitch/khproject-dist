@@ -73,8 +73,7 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
   "mcpServers": {
     "내부규정DB": {
       "command": "python",
-      "args": ["[설치경로]\\kh_rules\\mcp_server.py"],
-      "cwd": "[설치경로]\\kh_rules"
+      "args": ["-X", "utf8", "[설치경로]\\kh_rules\\mcp_server.py"]
     },
     "국가법령": {
       "command": "node",
@@ -95,8 +94,7 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
   "mcpServers": {
     "내부규정DB": {
       "command": "python",
-      "args": ["C:\\tools\\khproject_dist\\kh_rules\\mcp_server.py"],
-      "cwd": "C:\\tools\\khproject_dist\\kh_rules"
+      "args": ["-X", "utf8", "C:\\tools\\khproject_dist\\kh_rules\\mcp_server.py"]
     },
     "국가법령": {
       "command": "node",
