@@ -1,6 +1,6 @@
 # KH Project MCP 배포 패키지
 
-**버전:** v0.0.6
+**버전:** v0.0.7
 
 Claude Desktop에서 내부 규정 DB와 국가법령을 검색할 수 있는 MCP 서버 패키지입니다.
 
@@ -137,6 +137,9 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
 ---
 
 ## 릴리스 노트
+
+### v0.0.7
+- get_rule_full 호출 실패 수정(도구 설명 문자열의 중괄호가 내부 포맷과 충돌하던 문제).
 
 ### v0.0.6
 - 규정명 매칭 개선: 괄호 표기(개정 표기 등)를 저장·질의 양쪽에서 동일하게 제거해 비교.

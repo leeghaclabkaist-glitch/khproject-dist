@@ -192,7 +192,7 @@ def get_rule_full(rule_name: str, org: str = "", include_annex: bool = False,
 
     사용 시점:
     - 한 규정의 조문 전체가 필요할 때, get_toc + get_article 반복 대신 이 도구를 한 번 호출하세요.
-    - 반환: rule_id, 규정명, article_count(총 조문 수), articles[{article_no, article_title, text}],
+    - 반환: rule_id, 규정명, article_count(총 조문 수), articles(각 항목 article_no·article_title·text),
       intro(머리말·제·개정 이력), is_current 등.
     - 중복 청크는 (조번호, part_idx) 기준으로 자동 제거·병합되고 조 순서로 정렬됩니다.
     - 별표·서식(annex)은 기본 제외됩니다(2단 표가 본문에 섞이지 않도록). 필요하면 include_annex=True,
