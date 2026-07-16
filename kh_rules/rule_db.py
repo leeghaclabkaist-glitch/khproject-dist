@@ -38,9 +38,26 @@ def _korean_score(value: str) -> int:
     return hangul * 3 - mojibake
 
 
+def _normalize_name(value: str) -> str:
+    """규정명 매칭용 정규화: 괄호(개정·부가 표기) 제거 + 공백 제거.
+
+    저장 제목과 질의를 '대칭으로' 이 함수로 정규화해 비교하므로,
+    개정 표기 괄호('(21년 6월 개정)')든 의미형 괄호('(TRA)')든 양쪽 표기 모두 매칭된다.
+    예: '휴직자 복무관리 방침(21년 6월 개정)' → '휴직자복무관리방침'
+        '기술성숙도평가(TRA) 수행지침' → '기술성숙도평가수행지침'
+    """
+    value = re.sub(r"\([^)]*\)", "", value or "")
+    return re.sub(r"\s+", "", value)
+
+
 def connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    # 규정명 정규화 매칭용 SQL 함수 등록 (저장 제목·질의를 동일 규칙으로 비교)
+    try:
+        conn.create_function("nrm", 1, _normalize_name, deterministic=True)
+    except TypeError:
+        conn.create_function("nrm", 1, _normalize_name)   # 구버전 sqlite3 호환
     return conn
 
 
@@ -417,16 +434,14 @@ def get_article(
                 part_total
             FROM chunks
             WHERE chunk_type = 'article'
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
-                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
+              AND (rule_id = :name OR nrm(rule_title) LIKE :like_nrm)
               AND article_no = :article_no
               {org_filter}
             ORDER BY {primary_expr} DESC, part_idx, id
             """,
             {
                 "name": rule_name,
-                "like": f"%{rule_name}%",
-                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
+                "like_nrm": "%" + _normalize_name(rule_name) + "%",
                 "article_no": article_no,
                 "org": org,
                 **primary_params,
@@ -442,7 +457,6 @@ def get_toc(
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
     rule_name = rule_name.strip()
-    like_name = f"%{rule_name}%"
 
     chunk_types = ("'article'", "'annex'") if include_annex else ("'article'",)
     type_filter = f"chunk_type IN ({', '.join(chunk_types)})"
@@ -463,8 +477,7 @@ def get_toc(
                 is_current
             FROM chunks
             WHERE ({type_filter})
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
-                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
+              AND (rule_id = :name OR nrm(rule_title) LIKE :like_nrm)
               AND article_no IS NOT NULL AND article_no != ''
               AND article_title IS NOT NULL AND article_title != ''
               {org_filter}
@@ -473,8 +486,7 @@ def get_toc(
             """,
             {
                 "name": rule_name,
-                "like": like_name,
-                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
+                "like_nrm": "%" + _normalize_name(rule_name) + "%",
                 "org": org,
                 **primary_params,
             },
@@ -539,16 +551,14 @@ def get_annex(
                 part_total
             FROM chunks
             WHERE chunk_type = 'annex'
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
-                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
+              AND (rule_id = :name OR nrm(rule_title) LIKE :like_nrm)
               {annex_filter}
               {org_filter}
             ORDER BY {primary_expr} DESC, article_no, part_idx, id
             """,
             {
                 "name": rule_name,
-                "like": f"%{rule_name}%",
-                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
+                "like_nrm": "%" + _normalize_name(rule_name) + "%",
                 "annex_no": f"%{annex_no}%",
                 "org": org,
                 **primary_params,
@@ -580,8 +590,7 @@ def get_rule_full(
     primary_expr, primary_params = _primary_named("org_id")
     params = {
         "name": name,
-        "like": f"%{name}%",
-        "like_ns": "%" + re.sub(r"\s+", "", name) + "%",
+        "like_nrm": "%" + _normalize_name(name) + "%",
         "org": org,
         **primary_params,
     }
@@ -590,8 +599,7 @@ def get_rule_full(
             f"""
             SELECT org_id, rule_id, rule_title, MAX(is_current) AS is_current
             FROM chunks
-            WHERE (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
-                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
+            WHERE (rule_id = :name OR nrm(rule_title) LIKE :like_nrm)
               {org_filter}
             GROUP BY org_id, rule_id
             ORDER BY {primary_expr} DESC, is_current DESC, rule_id
