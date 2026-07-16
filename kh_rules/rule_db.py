@@ -417,7 +417,8 @@ def get_article(
                 part_total
             FROM chunks
             WHERE chunk_type = 'article'
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like)
+              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
+                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
               AND article_no = :article_no
               {org_filter}
             ORDER BY {primary_expr} DESC, part_idx, id
@@ -425,6 +426,7 @@ def get_article(
             {
                 "name": rule_name,
                 "like": f"%{rule_name}%",
+                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
                 "article_no": article_no,
                 "org": org,
                 **primary_params,
@@ -461,14 +463,21 @@ def get_toc(
                 is_current
             FROM chunks
             WHERE ({type_filter})
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like)
+              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
+                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
               AND article_no IS NOT NULL AND article_no != ''
               AND article_title IS NOT NULL AND article_title != ''
               {org_filter}
             GROUP BY org_id, rule_id, article_no
             ORDER BY {primary_expr} DESC, rule_id, article_no
             """,
-            {"name": rule_name, "like": like_name, "org": org, **primary_params},
+            {
+                "name": rule_name,
+                "like": like_name,
+                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
+                "org": org,
+                **primary_params,
+            },
         ).fetchall()
 
     result = [_row_to_dict(row) for row in rows]
@@ -530,7 +539,8 @@ def get_annex(
                 part_total
             FROM chunks
             WHERE chunk_type = 'annex'
-              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like)
+              AND (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
+                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
               {annex_filter}
               {org_filter}
             ORDER BY {primary_expr} DESC, article_no, part_idx, id
@@ -538,12 +548,142 @@ def get_annex(
             {
                 "name": rule_name,
                 "like": f"%{rule_name}%",
+                "like_ns": "%" + re.sub(r"\s+", "", rule_name) + "%",
                 "annex_no": f"%{annex_no}%",
                 "org": org,
                 **primary_params,
             },
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
+
+
+def get_rule_full(
+    rule_name: str,
+    org: str | None = None,
+    include_annex: bool = False,
+    max_chars: int = 15000,
+    start_article: str = "",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """규정 전문을 한 번에 반환한다(조문 병합).
+
+    - 매칭된 규정 중 primary·현행을 우선해 단일 rule_id를 선택.
+    - (article_no, part_idx) 기준으로 중복 청크를 흡수하고 조 순서로 정렬·병합.
+    - 별표(annex)는 기본 제외(include_annex=True 시 별도 키로 반환).
+    - 본문이 max_chars 를 넘으면 조 경계에서 잘라 truncated/next_start_article 반환
+      (max_chars=0 이면 제한 없음). start_article 을 주면 그 조부터 이어받는다.
+    """
+    name = (rule_name or "").strip()
+    if not name:
+        return {}
+    org_filter = "AND org_id = :org" if org else ""
+    primary_expr, primary_params = _primary_named("org_id")
+    params = {
+        "name": name,
+        "like": f"%{name}%",
+        "like_ns": "%" + re.sub(r"\s+", "", name) + "%",
+        "org": org,
+        **primary_params,
+    }
+    with connect(db_path) as conn:
+        head = conn.execute(
+            f"""
+            SELECT org_id, rule_id, rule_title, MAX(is_current) AS is_current
+            FROM chunks
+            WHERE (rule_id = :name OR rule_title = :name OR rule_title LIKE :like
+                   OR REPLACE(rule_title, ' ', '') LIKE :like_ns)
+              {org_filter}
+            GROUP BY org_id, rule_id
+            ORDER BY {primary_expr} DESC, is_current DESC, rule_id
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if not head:
+            return {}
+        org_id = head["org_id"]
+        rule_id = head["rule_id"]
+        rule_title = head["rule_title"]
+        rows = conn.execute(
+            """
+            SELECT chunk_type, article_no, article_title, text, part_idx,
+                   source_pdf, pdf_page_start
+            FROM chunks
+            WHERE org_id = ? AND rule_id = ?
+            """,
+            (org_id, rule_id),
+        ).fetchall()
+
+    # (article_no, part_idx) dedupe 후 병합
+    intro_parts: dict[int, str] = {}
+    articles: dict[str, dict] = {}
+    annexes: dict[str, dict] = {}
+    for r in rows:
+        ctype = r["chunk_type"]
+        ano = r["article_no"] or ""
+        pidx = r["part_idx"] or 0
+        if ctype == "article":
+            entry = articles.setdefault(ano, {"title": r["article_title"] or "", "parts": {}})
+            entry["parts"].setdefault(pidx, r["text"])
+        elif ctype == "annex":
+            annexes.setdefault(ano, {"parts": {}})["parts"].setdefault(pidx, r["text"])
+        elif ctype == "intro":
+            intro_parts.setdefault(pidx, r["text"])
+
+    def _merge(parts: dict[int, str]) -> str:
+        return "\n".join(parts[k] for k in sorted(parts)).strip()
+
+    ordered = sorted(articles.items(), key=lambda kv: _article_sort_key(kv[0]))
+    all_articles = [
+        {"article_no": ano, "article_title": d["title"], "text": _merge(d["parts"])}
+        for ano, d in ordered
+    ]
+    total_chars = sum(len(a["text"]) for a in all_articles)
+
+    start_key = re.sub(r"\s+", "", start_article or "")
+    started = not start_key
+    intro_text = "" if start_key else _merge(intro_parts)
+
+    out: list[dict] = []
+    used = len(intro_text)
+    truncated = False
+    next_start = None
+    for a in all_articles:
+        if not started:
+            if re.sub(r"\s+", "", a["article_no"]) == start_key:
+                started = True
+            else:
+                continue
+        alen = len(a["text"]) + len(a["article_no"]) + len(a["article_title"])
+        if out and max_chars and used + alen > max_chars:
+            truncated = True
+            next_start = a["article_no"]
+            break
+        out.append(a)
+        used += alen
+
+    result: dict[str, Any] = {
+        "org_id": org_id,
+        "rule_id": rule_id,
+        "rule_title": rule_title,
+        "is_current": head["is_current"],
+        "article_count": len(all_articles),
+        "returned_articles": len(out),
+        "total_chars": total_chars,
+        "returned_chars": used,
+        "truncated": truncated,
+        "next_start_article": next_start,
+        "intro": intro_text,
+        "articles": out,
+    }
+    if include_annex:
+        annex_sorted = sorted(annexes.items(), key=lambda kv: _article_sort_key(kv[0]))
+        result["annexes"] = [
+            {"annex_no": k, "text": _merge(v["parts"])} for k, v in annex_sorted
+        ]
+    else:
+        result["annex_count"] = len(annexes)
+    return result
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:

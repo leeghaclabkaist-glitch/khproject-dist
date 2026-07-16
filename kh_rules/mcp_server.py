@@ -8,6 +8,7 @@ from rule_db import (
     count_rules as db_count_rules,
     get_annex as db_get_annex,
     get_article as db_get_article,
+    get_rule_full as db_get_rule_full,
     get_toc as db_get_toc,
     list_rules as db_list_rules,
     search_articles as db_search_articles,
@@ -181,6 +182,35 @@ def get_annex(rule_name: str, annex_no: str = "", org: str = "") -> str:
         get_annex("급여규정", org="국과연"), get_annex("여비", org="기품원")
     """.format(org_ref=_org_ref())
     return _json(db_get_annex(rule_name, annex_no, org=_resolve_org(org)))
+
+
+@mcp.tool()
+def get_rule_full(rule_name: str, org: str = "", include_annex: bool = False,
+                  max_chars: int = 15000, start_article: str = "") -> str:
+    """
+    특정 규정의 본문(조문) 전문을 한 번에 병합하여 반환합니다.
+
+    사용 시점:
+    - 한 규정의 조문 전체가 필요할 때, get_toc + get_article 반복 대신 이 도구를 한 번 호출하세요.
+    - 반환: rule_id, 규정명, article_count(총 조문 수), articles[{article_no, article_title, text}],
+      intro(머리말·제·개정 이력), is_current 등.
+    - 중복 청크는 (조번호, part_idx) 기준으로 자동 제거·병합되고 조 순서로 정렬됩니다.
+    - 별표·서식(annex)은 기본 제외됩니다(2단 표가 본문에 섞이지 않도록). 필요하면 include_annex=True,
+      또는 get_annex 를 사용하세요.
+    - 긴 규정: 본문이 max_chars(기본 15000)를 넘으면 조 경계에서 잘리고 truncated=true 와
+      next_start_article 이 반환됩니다. 이어받으려면 그 값을 start_article 로 다시 호출하세요.
+      전체를 무제한으로 받으려면 max_chars=0.
+
+{org_ref}
+
+    예: get_rule_full("휴직자복무관리방침", org="ADD"),
+        get_rule_full("계약요령", org="ADD", max_chars=30000),
+        get_rule_full("계약요령", org="ADD", start_article="제40조")
+    """.format(org_ref=_org_ref())
+    return _json(db_get_rule_full(
+        rule_name, org=_resolve_org(org), include_annex=include_annex,
+        max_chars=max_chars, start_article=start_article,
+    ))
 
 
 @mcp.tool()

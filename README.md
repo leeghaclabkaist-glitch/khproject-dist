@@ -1,6 +1,6 @@
 # KH Project MCP 배포 패키지
 
-**버전:** v0.0.4
+**버전:** v0.0.5
 
 Claude Desktop에서 내부 규정 DB와 국가법령을 검색할 수 있는 MCP 서버 패키지입니다.
 
@@ -137,6 +137,12 @@ C:\Users\[사용자이름]\AppData\Roaming\Claude\claude_desktop_config.json
 ---
 
 ## 릴리스 노트
+
+### v0.0.5
+- **get_rule_full 도구 추가**: 규정 본문 전문을 한 번에 조회(조문 병합). 중복 청크 자동 제거,
+  별표는 기본 제외, 긴 규정은 max_chars(기본 15000) 초과 시 이어받기 지원.
+- 조회 도구(get_article/get_toc/get_annex/get_rule_full)의 규정명 매칭을 공백무시로 통일
+  ("휴직자 복무관리 방침"·"휴직자복무관리방침" 모두 인식).
 
 ### v0.0.4
 - ALIO 원본 PDF가 '모아 찍기(2쪽 모아)' 형태여서 조문이 뒤섞이던 규정 수정
