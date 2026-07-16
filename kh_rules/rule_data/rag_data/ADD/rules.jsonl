@@ -170,7 +170,6 @@
 {"rule_id": "령제727호_20230110", "rule_title": "전문계약직관리요령", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제506호_20140428", "rule_title": "전문기술교육수강료운영방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "령제680호_20210713", "rule_title": "전자연구노트작성및관리요령", "is_current": true, "org_id": "ADD"}
-{"rule_id": "방침제731호_20191008", "rule_title": "절충교역업무방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제920호_20230922", "rule_title": "정년후재고용운영방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "규제830호_20211031", "rule_title": "정보공개운영규정", "is_current": true, "org_id": "ADD"}
 {"rule_id": "규제883호_20230202", "rule_title": "정보화업무규정", "is_current": true, "org_id": "ADD"}
@@ -210,4 +209,5 @@
 {"rule_id": "규제871호_20221227", "rule_title": "회계규정", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제953호_20240930", "rule_title": "회의비집행방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제988호_20251201", "rule_title": "휴가업무방침", "is_current": true, "org_id": "ADD"}
-{"rule_id": "방침제826호_20210629", "rule_title": "휴직자 복무관리 방침(21년 6월 개정)", "is_current": true, "org_id": "ADD"}
+{"rule_id": "방침제731호_20191008", "rule_title": "절충교역업무방침", "is_current": true, "org_id": "ADD"}
+{"rule_id": "방침제826호_20210629", "rule_title": "휴직자복무관리방침", "is_current": true, "org_id": "ADD"}
