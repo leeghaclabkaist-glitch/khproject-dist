@@ -54,7 +54,6 @@
 {"rule_id": "방침제975호_20250401", "rule_title": "매식비지급방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제990호_20251201", "rule_title": "명예소원증등록및수여방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "령제699호_20220101", "rule_title": "명예퇴직등운영요령", "is_current": true, "org_id": "ADD"}
-{"rule_id": "방침제978호_20250408", "rule_title": "무기체계시제업무방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "령제741호_20231229", "rule_title": "물품관리요령", "is_current": true, "org_id": "ADD"}
 {"rule_id": "규제943호_20250903", "rule_title": "미래도전국방기술업무처리규정", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제925호_20231025", "rule_title": "민·군기술협력사업모니터링요원운영방침", "is_current": true, "org_id": "ADD"}
@@ -72,8 +71,6 @@
 {"rule_id": "방침제405호_20111122", "rule_title": "부동산임대차계약방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "부설_규제3호_20240408", "rule_title": "부설국방신속획득기술연구원급여규정", "is_current": true, "org_id": "ADD"}
 {"rule_id": "부설_요령제7호_20251216", "rule_title": "부설 국방신속획득기술연구원 기술이전 및 기술료 산정징수 위탁업무 요령(2025년도 12월 16일 제정)", "is_current": true, "org_id": "ADD"}
-{"rule_id": "부설_규제21호_20251027", "rule_title": "부설 국방신속획득기술연구원 방위산업기술보호 업무 규정(2025년 10월 27일 제정)", "is_current": true, "org_id": "ADD"}
-{"rule_id": "부설_규제14호_20240924", "rule_title": "부설 국방신속획득기술연구원 신속시범사업 업무관리 규정(2025년도 10월 14일 개정)", "is_current": true, "org_id": "ADD"}
 {"rule_id": "부설_규제932호_20241230", "rule_title": "부설국방신속획득기술연구원운영규정", "is_current": true, "org_id": "ADD"}
 {"rule_id": "부설_령제6호_20251014", "rule_title": "부설국방신속획득기술연구원운영요령", "is_current": true, "org_id": "ADD"}
 {"rule_id": "부설_규제1호_20240408", "rule_title": "부설국방신속획득기술연구원원규관리규정", "is_current": true, "org_id": "ADD"}
@@ -211,3 +208,6 @@
 {"rule_id": "방침제988호_20251201", "rule_title": "휴가업무방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제731호_20191008", "rule_title": "절충교역업무방침", "is_current": true, "org_id": "ADD"}
 {"rule_id": "방침제826호_20210629", "rule_title": "휴직자복무관리방침", "is_current": true, "org_id": "ADD"}
+{"rule_id": "부설_규제21호_20251027", "rule_title": "부설 국방신속획득기술연구원 방위산업기술보호 업무 규정(2025년 10월 27일 제정)", "is_current": true, "org_id": "ADD"}
+{"rule_id": "부설_규제14호_20240924", "rule_title": "부설 국방신속획득기술연구원 신속시범사업 업무관리 규정(2025년도 10월 14일 개정)", "is_current": true, "org_id": "ADD"}
+{"rule_id": "방침제978호_20250408", "rule_title": "무기체계시제업무방침", "is_current": true, "org_id": "ADD"}
